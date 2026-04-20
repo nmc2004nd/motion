@@ -1,4 +1,9 @@
-"""Bước thiết lập tương ứng marker bằng Hungarian và ràng buộc vật lý."""
+import cv2
+import numpy as np
+
+def update_files():
+    with open("src/tracking.py", "w") as f:
+        f.write('''"""Bước thiết lập tương ứng marker bằng Hungarian và ràng buộc vật lý."""
 
 import numpy as np
 from scipy.spatial import distance_matrix
@@ -57,22 +62,6 @@ def match_markers_robust(
             valid[r] = True
 
     return tracked_points, valid
-
-if __name__ == "__main__":
-    import cv2
-    from .preprocessing import preprocess
-    from .detection import detect_markers
-
-    # Test nhanh trên một cặp ảnh mẫu.
-    img_ref = cv2.imread("data/ref/my_photo_1.jpg", cv2.IMREAD_GRAYSCALE)
-    img_def = cv2.imread("data/img/my_photo_2.jpg", cv2.IMREAD_GRAYSCALE)
-
-    ref_proc = preprocess(img_ref)
-    def_proc = preprocess(img_def)
-
-    ref_markers, _ = detect_markers(ref_proc)
-    def_markers, _ = detect_markers(def_proc)
-
-    tracked_pts, valid = match_markers_robust(ref_markers, def_markers, img_ref.shape)
-    print(f"Tracked points: {len(tracked_pts)}\n ref_markers : {len(ref_markers)}\n")
-    print(f"Valid ratio: {valid.sum()}/{len(valid)}")
+''')
+update_files()
+print("Updated tracking.py")

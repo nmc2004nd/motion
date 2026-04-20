@@ -73,7 +73,7 @@ def detect_markers(
 #     img = cv2.imread("data/ref/my_photo_1.jpg", cv2.IMREAD_GRAYSCALE)
 #     proc = preprocess(img)
 #     centers, keypoints = detect_markers(proc)
-#     print(f"Detected {len(centers)} markers: {centers}")
+#     print(f"Detected: {len(centers)}\n markers: \n{centers}")
 #     vis = cv2.drawKeypoints(
 #         proc,
 #         keypoints,

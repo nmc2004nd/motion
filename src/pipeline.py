@@ -9,7 +9,7 @@ import numpy as np
 
 from .detection import detect_markers
 from .preprocessing import preprocess
-from .tracking import track_markers_lk
+from .tracking import match_markers_robust
 from .visualization import visualize_flow_arrows, visualize_flow_hsv
 
 
@@ -106,7 +106,7 @@ class TactileMarkerTrackingPipeline:
         cv2.imwrite(str(self.output_dir / "03_def_markers_naive.png"), vis_def_naive)
 
         # Bước 3: Track marker tham chiếu sang frame biến dạng (đảm bảo tương ứng)
-        def_markers_tracked, valid = track_markers_lk(ref_proc, def_proc, ref_markers)
+        def_markers_tracked, valid = match_markers_robust(ref_markers, def_markers_naive, img_ref.shape, max_disp=img_ref.shape[1]/10.0)
         print(f"[3] Tracked {valid.sum()}/{len(ref_markers)} markers successfully")
 
         # Bước 4: Thống kê độ dịch chuyển
