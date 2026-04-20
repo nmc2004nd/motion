@@ -16,16 +16,37 @@ def match_markers_robust(
     def_points: np.ndarray,
     img_shape: tuple[int, int],
     max_disp: float = 60.0,
+    force_center: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Tìm tương ứng marker từ ảnh tham chiếu sang ảnh biến dạng bằng Hungarian."""
+    """Tìm tương ứng marker từ ảnh tham chiếu sang ảnh biến dạng bằng Hungarian.
+    Có thể truyền vào force_center (tâm lực nhấn) nếu có. Nếu không, thuật toán
+    sẽ tự động xác định thông qua một lần chạy Hungarian thô (2-pass).
+    """
     if ref_points.size == 0 or def_points.size == 0:
         return ref_points.copy(), np.zeros(len(ref_points), dtype=bool)
 
-    h, w = img_shape[:2]
-    center = np.array([w / 2.0, h / 2.0], dtype=np.float32)
+    # Ma trận khoảng cách Euclidean cơ bản
+    D_base = distance_matrix(ref_points, def_points)
 
-    # Ma trận khoảng cách Euclidean
-    D = distance_matrix(ref_points, def_points)
+    if force_center is None:
+        # Pass 1: Chạy Hungarian thô không có ràng buộc lực để tìm các vector dịch chuyển
+        row_ind_raw, col_ind_raw = linear_sum_assignment(D_base)
+        
+        # Lấy các vector dịch chuyển
+        disps_raw = def_points[col_ind_raw] - ref_points[row_ind_raw]
+        disp_mags = np.linalg.norm(disps_raw, axis=1)
+        
+        # Tự động tìm tâm lực: lấy tọa độ trung bình của top 10% các điểm dịch chuyển mạnh nhất
+        # (Khi bị nhấn, vùng quanh tâm lực sẽ có chuyển động lớn nhất)
+        n_top = max(1, int(len(disp_mags) * 0.1))
+        top_indices = np.argsort(disp_mags)[-n_top:]
+        
+        # Tâm lực tự động là trung bình của các điểm biến dạng mạnh nhất
+        center = np.mean(ref_points[row_ind_raw[top_indices]], axis=0)
+    else:
+        center = np.array(force_center, dtype=np.float32)
+
+    D = D_base.copy()
 
     # Ràng buộc vật lý: Khi bị nén/nhấn, marker tỏa ra từ tâm (Radial Expansion)
     # Ta thêm hình phạt (penalty) nặng cho các chuyển động hướng ngược vào trong.
@@ -34,10 +55,11 @@ def match_markers_robust(
     norms[norms < 1e-5] = 1.0
     radial_dirs = radial_dirs / norms
 
-    # Vector dịch chuyển: (N, M, 2)
-    disps = def_points[None, :, :] - ref_points[:, None, :]
-    # Tính tích vô hướng để xem hướng di chuyển: (N, M)
-    dot_prods = np.sum(disps * radial_dirs[:, None, :], axis=2)
+    # Tính tích vô hướng tối ưu bằng phép nhân ma trận thay vì dùng mảng 3D
+    # (N, 2) @ (2, M) -> (N, M)
+    # def_points.T có shape (2, M)
+    # Phép tính tương đương: (def_points - ref_points) @ radial_dirs
+    dot_prods = radial_dirs @ def_points.T - np.sum(ref_points * radial_dirs, axis=1, keepdims=True)
 
     # Áp dụng penalty nếu dot_prod âm (chuyển động hướng vào tâm quá mức)
     inward_mask = dot_prods < -2.0  # Cho phép nhiễu dịch chuyển nhỏ ~2px

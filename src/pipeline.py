@@ -16,9 +16,9 @@ from .visualization import visualize_flow_arrows, visualize_flow_hsv
 @dataclass
 class PipelineConfig:
     ref_image_path: str = "data/ref/my_photo_1.jpg"
-    def_image_path: str = "data/img/my_photo_2.jpg"
+    def_image_path: str = "data/img/sample_0010.png"
     output_dir: str = "outputs"
-    arrow_scale: float = 3.0
+    arrow_scale: float = 1.0
 
 
 class TactileMarkerTrackingPipeline:

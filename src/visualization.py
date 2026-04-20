@@ -13,7 +13,7 @@ def visualize_flow_arrows(
     ref_pts: np.ndarray,
     def_pts: np.ndarray,
     valid: np.ndarray,
-    scale: float = 3.0,
+    scale: float = 2.0,
     save_path: str | None = None,
 ) -> np.ndarray:
     """Vẽ mũi tên từ vị trí tham chiếu đến vị trí đã biến dạng (có scale)."""
