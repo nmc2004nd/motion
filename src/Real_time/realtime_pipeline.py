@@ -1,121 +1,145 @@
+import argparse
+import logging
+from typing import Optional
+
 import cv2
 import numpy as np
+import numpy.typing as npt
 
-# Import các module đã có sẵn từ thư mục src
 from src.utils.detection import detect_markers
 from src.utils.preprocessing import preprocess
 from src.Hungarian.Hungarian import match_markers_robust
 from src.PyrLK.PyrLK import track_markers_lk
 from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
 
+logger = logging.getLogger(__name__)
+
+
 class RealtimeTactileTracking:
-    def __init__(self, camera_id=0, arrow_scale=1.0, tracking_method="H"):
+    """Pipeline realtime để theo dõi các marker tactile từ luồng webcam."""
+
+    def __init__(self, camera_id: int = 0, arrow_scale: float = 1.0, tracking_method: str = "H") -> None:
         self.camera_id = camera_id
         self.arrow_scale = arrow_scale
         self.tracking_method = tracking_method
-        self.ref_img = None
-        self.ref_markers = None
-        
-    def run(self):
-        # Mở luồng video /dev/video0 (camera_id=0)
-        cap = cv2.VideoCapture(self.camera_id)
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open camera: {self.camera_id}")
+        self.reference_image: Optional[npt.NDArray] = None
+        self.reference_markers: Optional[npt.NDArray] = None
 
-        print(f"=== BẮT ĐẦU CAMERA {self.camera_id} ===")
-        print("- Nhấn phím 'r' để lấy frame hiện tại làm Reference (Trạng thái tĩnh/chưa biến dạng).")
-        print("- Nhấn phím 'c' để xóa Reference hiện tại và quay lại ban đầu.")
-        print("- Nhấn phím 'q' để thoát.")
+    def _wait_for_camera_warmup(self, capture: cv2.VideoCapture, frames: int = 15) -> None:
+        """Bỏ qua vài frame đầu tiên để cảm biến camera tự điều chỉnh."""
+        for _ in range(frames):
+            capture.read()
 
-        # Bỏ qua một số frame đầu để camera ổn định ánh sáng
-        for _ in range(15):
-            cap.read()
+    def _handle_keyboard_events(self, key: int, gray_frame: npt.NDArray) -> bool:
+        """Xử lý các sự kiện bàn phím OpenCV. Trả về True nếu người dùng muốn thoát."""
+        if key == ord('q'):
+            return True
+        elif key == ord('r'):
+            self.reference_image = gray_frame.copy()
+            reference_proc = preprocess(self.reference_image)
+            self.reference_markers, _ = detect_markers(reference_proc)
+            logger.info(f"Đã chụp ảnh tham chiếu: Phát hiện {len(self.reference_markers)} markers.")
+        elif key == ord('c'):
+            self.reference_image = None
+            self.reference_markers = None
+            logger.info("Đã xóa ảnh tham chiếu.")
+        return False
+
+    def _process_tracking(self, gray_frame: npt.NDArray) -> None:
+        """Xử lý phát hiện và theo dõi marker khi ảnh tham chiếu đã được thiết lập."""
+        if self.reference_image is None or self.reference_markers is None:
+            return
+
+        deformed_proc = preprocess(gray_frame)
+        deformed_markers_naive, _ = detect_markers(deformed_proc)
+
+        if len(self.reference_markers) == 0:
+            return
+
+        if self.tracking_method == "LK":
+            deformed_markers_tracked, valid = track_markers_lk(
+                self.reference_image, gray_frame, self.reference_markers
+            )
+        else:
+            if len(deformed_markers_naive) > 0:
+                max_displacement = self.reference_image.shape[1] / 10.0
+                deformed_markers_tracked, valid = match_markers_robust(
+                    self.reference_markers, deformed_markers_naive, self.reference_image.shape,
+                    max_disp=max_displacement
+                )
+            else:
+                valid = np.zeros(len(self.reference_markers), dtype=bool)
+
+        if valid.any():
+            vis_arrows = visualize_flow_arrows(
+                deformed_proc, self.reference_markers, deformed_markers_tracked, valid,
+                scale=self.arrow_scale, save_path=None
+            )
+            cv2.imshow("Realtime Flow Arrows", vis_arrows)
+
+            vis_hsv = visualize_flow_hsv(
+                self.reference_markers, deformed_markers_tracked, valid,
+                self.reference_image.shape, save_path=None
+            )
+            cv2.imshow("Realtime Flow HSV", vis_hsv)
+
+    def run(self) -> None:
+        """Vòng lặp sự kiện thực thi chính."""
+        capture = cv2.VideoCapture(self.camera_id)
+        if not capture.isOpened():
+            raise RuntimeError(f"Không thể mở camera: {self.camera_id}")
+
+        logger.info(f"=== BẮT ĐẦU CAMERA {self.camera_id} ===")
+        logger.info("- Nhấn 'r' để chụp frame hiện tại làm Reference (Trạng thái tĩnh).")
+        logger.info("- Nhấn 'c' để xóa Reference frame.")
+        logger.info("- Nhấn 'q' để thoát.")
+
+        self._wait_for_camera_warmup(capture)
 
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Lỗi: Không thể lấy frame từ camera.")
+            success, frame = capture.read()
+            if not success:
+                logger.error("Không thể đọc frame từ camera.")
                 break
 
-            # Chuyển ảnh sang dạng xám
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             display_frame = frame.copy()
 
-            # Bắt sự kiện phím
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            if self._handle_keyboard_events(key, gray_frame):
                 break
-            elif key == ord('r'):
-                # Lưu mốc tham chiếu
-                self.ref_img = gray_frame.copy()
-                ref_proc = preprocess(self.ref_img)
-                self.ref_markers, _ = detect_markers(ref_proc)
-                print(f"Đã lưu ảnh Reference: Phát hiện {len(self.ref_markers)} markers.")
-            elif key == ord('c'):
-                # Xoá refernce
-                self.ref_img = None
-                self.ref_markers = None
-                print("Đã xoá ảnh Reference.")
 
-            # Nếu đã có frame tham chiếu, tiến hành tính toán tracking realtime
-            if self.ref_img is not None and self.ref_markers is not None:
-                def_proc = preprocess(gray_frame)
-                def_markers_naive, _ = detect_markers(def_proc)
-                
-                # Gọi tính năng Tracking Match (cân nhắc giảm max_disp hoặc scale thủ công nếu chạy quá chậm)
-                if len(self.ref_markers) > 0:
-                    if self.tracking_method == "LK":
-                        def_markers_tracked, valid = track_markers_lk(
-                            self.ref_img, gray_frame, self.ref_markers
-                        )
-                    else:
-                        if len(def_markers_naive) > 0:
-                            def_markers_tracked, valid = match_markers_robust(
-                                self.ref_markers, def_markers_naive, self.ref_img.shape, 
-                                max_disp=self.ref_img.shape[1]/10.0
-                            )
-                        else:
-                            valid = np.zeros(len(self.ref_markers), dtype=bool)
-
-                    if valid.any():
-                        # Trực quan hoá luồng Vector/Arrows (không lưu file, hiển thị thẳng lên màn hình)
-                        vis_arrows = visualize_flow_arrows(
-                            def_proc, self.ref_markers, def_markers_tracked, valid, 
-                            scale=self.arrow_scale, save_path=None
-                        )
-                        cv2.imshow("Realtime Flow Arrows", vis_arrows)
-
-                        # Trực quan hoá luồng Màu HSV (không lưu file)
-                        vis_hsv = visualize_flow_hsv(
-                            self.ref_markers, def_markers_tracked, valid, 
-                            self.ref_img.shape, save_path=None
-                        )
-                        cv2.imshow("Realtime Flow HSV", vis_hsv)
-
-                # Hiển thị text trạng thái đang Tracking
-                cv2.putText(display_frame, f"Tracking ({self.tracking_method}): {len(self.ref_markers)} markers limit", 
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            if self.reference_image is not None and self.reference_markers is not None:
+                self._process_tracking(gray_frame)
+                status_text = f"Dang track ({self.tracking_method}): gioi han {len(self.reference_markers)} markers"
+                cv2.putText(
+                    display_frame, status_text, (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
+                )
             else:
-                # Chưa có Reference, nhắc người dùng
-                cv2.putText(display_frame, "Press 'r' to capture reference", 
-                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                cv2.putText(
+                    display_frame, "Nhan 'r' de chup tham chieu", 
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+                )
 
-            # Hiển thị ảnh Raw từ Camera liên tục
-            cv2.imshow("Raw WebCam (/dev/video0)", display_frame)
+            cv2.imshow(f"Raw WebCam (/dev/video{self.camera_id})", display_frame)
 
-        cap.release()
+        capture.release()
         cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    import argparse
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    
     parser = argparse.ArgumentParser(description="Realtime tactile tracking")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera device index")
     parser.add_argument("--arrow-scale", type=float, default=1.0, help="Arrow scale factor")
     parser.add_argument("--tracking-method", type=str, choices=["H", "LK"], default="H", help="Tracking method (H: Hungarian, LK: PyrLK)")
     args = parser.parse_args()
 
-    pipeline = RealtimeTactileTracking(camera_id=args.camera_id, arrow_scale=args.arrow_scale, tracking_method=args.tracking_method)
+    pipeline = RealtimeTactileTracking(
+        camera_id=args.camera_id, 
+        arrow_scale=args.arrow_scale, 
+        tracking_method=args.tracking_method
+    )
     pipeline.run()
-
-# python3 -m src.Real_time.realtime_pipeline --tracking-method LK
