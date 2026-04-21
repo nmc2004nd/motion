@@ -23,6 +23,11 @@ def parse_args() -> argparse.Namespace:
         default="H",
         help="Tracking method to use: 'H' for Hungarian or 'LK' for PyrLK",
     )
+    parser.add_argument(
+        "--use-calibration",
+        action="store_true",
+        help="Apply camera calibration to undistort images before tracking",
+    )
     return parser.parse_args()
 
 
@@ -34,6 +39,7 @@ def main() -> None:
         output_dir=args.output_dir,
         arrow_scale=args.arrow_scale,
         tracking_method=args.tracking_method,
+        use_calibration=args.use_calibration,
     )
     pipeline = TactileMarkerTrackingPipeline(config=config)
     pipeline.run()
@@ -41,3 +47,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python -m src.main --use-calibration : nếu áp dụng calib

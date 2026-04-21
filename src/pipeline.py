@@ -9,6 +9,7 @@ import numpy as np
 
 from .utils.detection import detect_markers
 from .utils.preprocessing import preprocess
+from .utils.calibration import load_calibration, undistort_image
 from .Hungarian.Hungarian import match_markers_robust
 from .PyrLK.PyrLK import track_markers_lk
 from .utils.visualization import visualize_flow_arrows, visualize_flow_hsv
@@ -21,6 +22,7 @@ class PipelineConfig:
     output_dir: str = "outputs"
     arrow_scale: float = 1.0
     tracking_method: str = "H"  # 'H' cho Hungarian, 'LK' cho PyrLK
+    use_calibration: bool = False
 
 
 class TactileMarkerTrackingPipeline:
@@ -70,8 +72,22 @@ class TactileMarkerTrackingPipeline:
         plt.close(fig)
 
     def run(self) -> None:
-        img_ref = self._read_gray(self.config.ref_image_path)
-        img_def = self._read_gray(self.config.def_image_path)
+        img_ref_raw = self._read_gray(self.config.ref_image_path)
+        img_def_raw = self._read_gray(self.config.def_image_path)
+
+        if self.config.use_calibration:
+            print("[0] Loading Camera Calibration...")
+            mtx, dist = load_calibration("calib_result.npz")
+            img_ref = undistort_image(img_ref_raw, mtx, dist)
+            img_def = undistort_image(img_def_raw, mtx, dist)
+            
+            # Save undistorted images as a debug step
+            cv2.imwrite(str(self.output_dir / "01_ref_undistorted.png"), img_ref)
+            cv2.imwrite(str(self.output_dir / "01_def_undistorted.png"), img_def)
+            print("[0] Images undistorted successfully")
+        else:
+            img_ref = img_ref_raw
+            img_def = img_def_raw
 
         # Bước 1: Tiền xử lý
         ref_proc = preprocess(img_ref)
@@ -146,8 +162,8 @@ class TactileMarkerTrackingPipeline:
 
         # Hình tổng hợp các bước
         self._save_summary_figure(
-            img_ref,
-            img_def,
+            img_ref_raw,
+            img_def_raw,
             ref_proc,
             vis_ref,
             vis_arrows,

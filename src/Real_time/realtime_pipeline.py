@@ -117,3 +117,5 @@ if __name__ == "__main__":
 
     pipeline = RealtimeTactileTracking(camera_id=args.camera_id, arrow_scale=args.arrow_scale, tracking_method=args.tracking_method)
     pipeline.run()
+
+# python3 -m src.Real_time.realtime_pipeline --tracking-method LK
