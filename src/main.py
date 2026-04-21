@@ -8,13 +8,20 @@ from .pipeline import PipelineConfig, TactileMarkerTrackingPipeline
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run tactile marker tracking pipeline")
     parser.add_argument("--ref-image", default="data/ref/my_photo_1.jpg", help="Path to reference image")
-    parser.add_argument("--def-image", default="data/img/my_photo_4-1.jpg", help="Path to deformed image")
+    parser.add_argument("--def-image", default="data/img/my_photo_2.jpg", help="Path to deformed image")
     parser.add_argument("--output-dir", default="outputs", help="Directory for generated outputs")
     parser.add_argument(
         "--arrow-scale",
         type=float,
         default=2.0,
         help="Scale factor for displacement arrows",
+    )
+    parser.add_argument(
+        "--tracking-method",
+        type=str,
+        choices=["H", "LK"],
+        default="H",
+        help="Tracking method to use: 'H' for Hungarian or 'LK' for PyrLK",
     )
     return parser.parse_args()
 
@@ -26,6 +33,7 @@ def main() -> None:
         def_image_path=args.def_image,
         output_dir=args.output_dir,
         arrow_scale=args.arrow_scale,
+        tracking_method=args.tracking_method,
     )
     pipeline = TactileMarkerTrackingPipeline(config=config)
     pipeline.run()

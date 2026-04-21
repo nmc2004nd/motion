@@ -7,10 +7,11 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .detection import detect_markers
-from .preprocessing import preprocess
-from .tracking import match_markers_robust
-from .visualization import visualize_flow_arrows, visualize_flow_hsv
+from .utils.detection import detect_markers
+from .utils.preprocessing import preprocess
+from .Hungarian.Hungarian import match_markers_robust
+from .PyrLK.PyrLK import track_markers_lk
+from .utils.visualization import visualize_flow_arrows, visualize_flow_hsv
 
 
 @dataclass
@@ -19,6 +20,7 @@ class PipelineConfig:
     def_image_path: str = "data/img/sample_0010.png"
     output_dir: str = "outputs"
     arrow_scale: float = 1.0
+    tracking_method: str = "H"  # 'H' cho Hungarian, 'LK' cho PyrLK
 
 
 class TactileMarkerTrackingPipeline:
@@ -26,7 +28,7 @@ class TactileMarkerTrackingPipeline:
 
     def __init__(self, config: PipelineConfig | None = None) -> None:
         self.config = config or PipelineConfig()
-        self.output_dir = Path(self.config.output_dir)
+        self.output_dir = Path(self.config.output_dir) / self.config.tracking_method
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _read_gray(self, image_path: str) -> np.ndarray:
@@ -106,8 +108,12 @@ class TactileMarkerTrackingPipeline:
         cv2.imwrite(str(self.output_dir / "03_def_markers_naive.png"), vis_def_naive)
 
         # Bước 3: Track marker tham chiếu sang frame biến dạng (đảm bảo tương ứng)
-        def_markers_tracked, valid = match_markers_robust(ref_markers, def_markers_naive, img_ref.shape, max_disp=img_ref.shape[1]/10.0)
-        print(f"[3] Tracked {valid.sum()}/{len(ref_markers)} markers successfully")
+        if self.config.tracking_method == "LK":
+            def_markers_tracked, valid = track_markers_lk(img_ref, img_def, ref_markers)
+        else:  # defaults to 'H'
+            def_markers_tracked, valid = match_markers_robust(ref_markers, def_markers_naive, img_ref.shape, max_disp=img_ref.shape[1]/10.0)
+            
+        print(f"[3] Tracked {valid.sum()}/{len(ref_markers)} markers successfully (using {self.config.tracking_method})")
 
         # Bước 4: Thống kê độ dịch chuyển
         if valid.any():

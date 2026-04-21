@@ -2,15 +2,17 @@ import cv2
 import numpy as np
 
 # Import các module đã có sẵn từ thư mục src
-from src.detection import detect_markers
-from src.preprocessing import preprocess
-from src.tracking import match_markers_robust
-from src.visualization import visualize_flow_arrows, visualize_flow_hsv
+from src.utils.detection import detect_markers
+from src.utils.preprocessing import preprocess
+from src.Hungarian.Hungarian import match_markers_robust
+from src.PyrLK.PyrLK import track_markers_lk
+from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
 
 class RealtimeTactileTracking:
-    def __init__(self, camera_id=0, arrow_scale=1.0):
+    def __init__(self, camera_id=0, arrow_scale=1.0, tracking_method="H"):
         self.camera_id = camera_id
         self.arrow_scale = arrow_scale
+        self.tracking_method = tracking_method
         self.ref_img = None
         self.ref_markers = None
         
@@ -61,11 +63,19 @@ class RealtimeTactileTracking:
                 def_markers_naive, _ = detect_markers(def_proc)
                 
                 # Gọi tính năng Tracking Match (cân nhắc giảm max_disp hoặc scale thủ công nếu chạy quá chậm)
-                if len(def_markers_naive) > 0 and len(self.ref_markers) > 0:
-                    def_markers_tracked, valid = match_markers_robust(
-                        self.ref_markers, def_markers_naive, self.ref_img.shape, 
-                        max_disp=self.ref_img.shape[1]/10.0
-                    )
+                if len(self.ref_markers) > 0:
+                    if self.tracking_method == "LK":
+                        def_markers_tracked, valid = track_markers_lk(
+                            self.ref_img, gray_frame, self.ref_markers
+                        )
+                    else:
+                        if len(def_markers_naive) > 0:
+                            def_markers_tracked, valid = match_markers_robust(
+                                self.ref_markers, def_markers_naive, self.ref_img.shape, 
+                                max_disp=self.ref_img.shape[1]/10.0
+                            )
+                        else:
+                            valid = np.zeros(len(self.ref_markers), dtype=bool)
 
                     if valid.any():
                         # Trực quan hoá luồng Vector/Arrows (không lưu file, hiển thị thẳng lên màn hình)
@@ -83,7 +93,7 @@ class RealtimeTactileTracking:
                         cv2.imshow("Realtime Flow HSV", vis_hsv)
 
                 # Hiển thị text trạng thái đang Tracking
-                cv2.putText(display_frame, f"Tracking: {len(self.ref_markers)} markers limit", 
+                cv2.putText(display_frame, f"Tracking ({self.tracking_method}): {len(self.ref_markers)} markers limit", 
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             else:
                 # Chưa có Reference, nhắc người dùng
@@ -98,7 +108,12 @@ class RealtimeTactileTracking:
 
 
 if __name__ == "__main__":
-    # camera_id = 0 thông thường là /dev/video0. 
-    # Nếu hệ thống của bạn ở thiết bị khác, truyền chuỗi string camera_id="/dev/video0"
-    pipeline = RealtimeTactileTracking(camera_id=0, arrow_scale=1.0)
+    import argparse
+    parser = argparse.ArgumentParser(description="Realtime tactile tracking")
+    parser.add_argument("--camera-id", type=int, default=0, help="Camera device index")
+    parser.add_argument("--arrow-scale", type=float, default=1.0, help="Arrow scale factor")
+    parser.add_argument("--tracking-method", type=str, choices=["H", "LK"], default="H", help="Tracking method (H: Hungarian, LK: PyrLK)")
+    args = parser.parse_args()
+
+    pipeline = RealtimeTactileTracking(camera_id=args.camera_id, arrow_scale=args.arrow_scale, tracking_method=args.tracking_method)
     pipeline.run()

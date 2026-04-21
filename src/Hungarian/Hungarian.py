@@ -82,8 +82,11 @@ def match_markers_robust(
 
 if __name__ == "__main__":
     import cv2
-    from .preprocessing import preprocess
-    from .detection import detect_markers
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    from utils.preprocessing import preprocess
+    from utils.detection import detect_markers
 
     # Test nhanh trên một cặp ảnh mẫu.
     img_ref = cv2.imread("data/ref/my_photo_1.jpg", cv2.IMREAD_GRAYSCALE)
