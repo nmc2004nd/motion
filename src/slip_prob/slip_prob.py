@@ -11,7 +11,7 @@ class SlipDetector:
     đầu vào (prev_markers và current_markers) cùng mảng trạng thái hợp lệ (valid_mask).
     """
     
-    def __init__(self, min_motion_thresh: float = 0.5, slip_threshold: float = 0.8, min_moving_markers: int = 5):
+    def __init__(self, min_motion_thresh: float = 0.5, slip_threshold: float = 0.8, min_moving_markers: int = 5, alpha: float = 0.3):
         """
         Khởi tạo SlipDetector.
         
@@ -20,10 +20,17 @@ class SlipDetector:
             slip_threshold (float): Ngưỡng hệ số đồng hướng R (0 -> 1) để xác định trượt. 
                                     R càng gần 1 tức là các marker càng di chuyển song song.
             min_moving_markers (int): Số lượng marker tối thiểu đang chuyển động để có thể kết luận trượt.
+            alpha (float): Hệ số làm mượt (EMA) cho temporal smoothing. (0.0 -> 1.0, 1.0 = không làm mượt).
         """
         self.min_motion_thresh = min_motion_thresh
         self.slip_threshold = slip_threshold
         self.min_moving_markers = min_moving_markers
+        self.alpha = alpha
+        self._smoothed_r = 0.0  # Trạng thái để làm mượt theo thời gian
+        
+    def reset(self):
+        """Reset các bộ đệm làm mượt."""
+        self._smoothed_r = 0.0
 
     def calculate_slip_probability(
         self, 
@@ -50,9 +57,10 @@ class SlipDetector:
         """
         # Trả về giá trị mặc định nếu không có marker nào hợp lệ
         if not valid_mask.any():
+            self._smoothed_r *= (1 - self.alpha)
             return {
                 "is_slip": False,
-                "r_value": 0.0,
+                "r_value": self._smoothed_r,
                 "mean_direction": None,
                 "moving_count": 0
             }
@@ -82,14 +90,14 @@ class SlipDetector:
             motion_mask = motion_mask & (~rebound_mask)
 
         significant_disp = displacements[motion_mask]
-        
         moving_count = len(significant_disp)
 
         # Không đủ marker chuyển động -> không thể kết luận trượt (đang đứng yên/nhiễu)
         if moving_count < self.min_moving_markers:
+            self._smoothed_r *= (1 - self.alpha)  # Decay
             return {
                 "is_slip": False,
-                "r_value": 0.0,
+                "r_value": self._smoothed_r,
                 "mean_direction": None,
                 "moving_count": moving_count
             }
@@ -97,18 +105,25 @@ class SlipDetector:
         # Tính góc phi (theta) của mỗi điểm chuyển động (radian, từ -pi đến pi)
         angles = np.arctan2(significant_disp[:, 1], significant_disp[:, 0])
 
-        # Tính Mean Resultant Vector Length (R) theo circular statistics
-        sum_cos = np.sum(np.cos(angles))
-        sum_sin = np.sum(np.sin(angles))
+        # ÁP DỤNG TRỌNG SỐ THEO MAGNITUDE (WEIGHTING)
+        valid_mags = magnitudes[motion_mask]
+        weights = valid_mags / np.sum(valid_mags)  # Các vector dài sẽ đóng góp R lớn hơn
+
+        # Tính Mean Resultant Vector Length (R) có trọng số (Weighted circular mean)
+        sum_cos = np.sum(weights * np.cos(angles))
+        sum_sin = np.sum(weights * np.sin(angles))
         
-        r_value = np.sqrt(sum_cos**2 + sum_sin**2) / moving_count
+        raw_r_value = np.sqrt(sum_cos**2 + sum_sin**2)
         mean_direction = np.arctan2(sum_sin, sum_cos)
 
-        is_slip = bool(r_value > self.slip_threshold)
+        # ÁP DỤNG LÀM MƯỢT THỜI GIAN (TEMPORAL SMOOTHING EMA)
+        self._smoothed_r = self.alpha * raw_r_value + (1 - self.alpha) * self._smoothed_r
+
+        is_slip = bool(self._smoothed_r > self.slip_threshold)
 
         return {
             "is_slip": is_slip,
-            "r_value": float(r_value),
+            "r_value": float(self._smoothed_r),
             "mean_direction": float(mean_direction) if is_slip else None,
             "moving_count": int(moving_count)
         }

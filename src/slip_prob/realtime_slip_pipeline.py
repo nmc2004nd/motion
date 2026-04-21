@@ -35,7 +35,7 @@ class RealtimeSlipTracking:
         # Thêm State chuyên biệt cho Slip Detection
         self.marker_history = []
         self.history_length = 5  # Dùng bộ đệm 5 frames để loại bỏ giật nháy lúc trượt (Flickering)
-        self.slip_detector = SlipDetector(min_motion_thresh=0.5, slip_threshold=slip_threshold)
+        self.slip_detector = SlipDetector(min_motion_thresh=1, slip_threshold=slip_threshold)
 
     def _wait_for_camera_warmup(self, capture: cv2.VideoCapture, frames: int = 15) -> None:
         """Bỏ qua vài frame đầu tiên để cảm biến camera xử lý sáng."""
@@ -62,6 +62,7 @@ class RealtimeSlipTracking:
             self.reference_image = None
             self.reference_markers = None
             self.marker_history = []
+            self.slip_detector.reset()
             logger.info("Đã xóa ảnh tham chiếu.")
         return False
 
