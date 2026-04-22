@@ -11,6 +11,7 @@ from src.utils.preprocessing import preprocess
 from src.Hungarian.Hungarian import match_markers_robust
 from src.PyrLK.PyrLK import track_markers_lk
 from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
+from src.utils.config_parser import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -18,29 +19,37 @@ logger = logging.getLogger(__name__)
 class RealtimeTactileTracking:
     """Pipeline realtime để theo dõi các marker tactile từ luồng webcam."""
 
-    def __init__(self, camera_id: int = 0, arrow_scale: float = 1.0, tracking_method: str = "H", min_disp: float = 1.5) -> None:
-        self.camera_id = camera_id
-        self.arrow_scale = arrow_scale
-        self.tracking_method = tracking_method
-        self.min_disp = min_disp
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self.camera_id = self.config.get("camera", {}).get("device_id", 0)
+        self.tracking_method = self.config.get("tracking", {}).get("method", "H")
+        
+        # Load keyboard controls
+        controls = self.config.get("controls", {})
+        self.wait_key_time = controls.get("wait_key", 1)
+        self.key_capture = ord(controls.get("key_capture", "r"))
+        self.key_clear = ord(controls.get("key_clear", "c"))
+        self.key_quit = ord(controls.get("key_quit", "q"))
+        
         self.reference_image: Optional[npt.NDArray] = None
         self.reference_markers: Optional[npt.NDArray] = None
 
-    def _wait_for_camera_warmup(self, capture: cv2.VideoCapture, frames: int = 15) -> None:
+    def _wait_for_camera_warmup(self, capture: cv2.VideoCapture) -> None:
         """Bỏ qua vài frame đầu tiên để cảm biến camera tự điều chỉnh."""
+        frames = self.config.get("camera", {}).get("warmup_frames", 15)
         for _ in range(frames):
             capture.read()
 
     def _handle_keyboard_events(self, key: int, gray_frame: npt.NDArray) -> bool:
         """Xử lý các sự kiện bàn phím OpenCV. Trả về True nếu người dùng muốn thoát."""
-        if key == ord('q'):
+        if key == self.key_quit:
             return True
-        elif key == ord('r'):
+        elif key == self.key_capture:
             self.reference_image = gray_frame.copy()
-            reference_proc = preprocess(self.reference_image)
-            self.reference_markers, _ = detect_markers(reference_proc)
+            reference_proc = preprocess(self.reference_image, config=self.config)
+            self.reference_markers, _ = detect_markers(reference_proc, config=self.config)
             logger.info(f"Đã chụp ảnh tham chiếu: Phát hiện {len(self.reference_markers)} markers.")
-        elif key == ord('c'):
+        elif key == self.key_clear:
             self.reference_image = None
             self.reference_markers = None
             logger.info("Đã xóa ảnh tham chiếu.")
@@ -51,23 +60,20 @@ class RealtimeTactileTracking:
         if self.reference_image is None or self.reference_markers is None:
             return
 
-        deformed_proc = preprocess(gray_frame)
-        deformed_markers_naive, _ = detect_markers(deformed_proc)
+        deformed_proc = preprocess(gray_frame, config=self.config)
+        deformed_markers_naive, _ = detect_markers(deformed_proc, config=self.config)
 
         if len(self.reference_markers) == 0:
             return
 
         if self.tracking_method == "LK":
             deformed_markers_tracked, valid = track_markers_lk(
-                self.reference_image, gray_frame, self.reference_markers,
-                min_disp=self.min_disp
+                self.reference_image, gray_frame, self.reference_markers, config=self.config
             )
         else:
             if len(deformed_markers_naive) > 0:
-                max_displacement = self.reference_image.shape[1] / 10.0
                 deformed_markers_tracked, valid = match_markers_robust(
-                    self.reference_markers, deformed_markers_naive, self.reference_image.shape,
-                    max_disp=max_displacement, min_disp=self.min_disp
+                    self.reference_markers, deformed_markers_naive, self.reference_image.shape, config=self.config
                 )
             else:
                 valid = np.zeros(len(self.reference_markers), dtype=bool)
@@ -75,13 +81,13 @@ class RealtimeTactileTracking:
         if valid.any():
             vis_arrows = visualize_flow_arrows(
                 deformed_proc, self.reference_markers, deformed_markers_tracked, valid,
-                scale=self.arrow_scale, save_path=None
+                config=self.config, save_path=None
             )
             cv2.imshow("Realtime Flow Arrows", vis_arrows)
 
             vis_hsv = visualize_flow_hsv(
                 self.reference_markers, deformed_markers_tracked, valid,
-                self.reference_image.shape, save_path=None
+                self.reference_image.shape, config=self.config, save_path=None
             )
             cv2.imshow("Realtime Flow HSV", vis_hsv)
 
@@ -107,21 +113,29 @@ class RealtimeTactileTracking:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             display_frame = frame.copy()
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(self.wait_key_time) & 0xFF
             if self._handle_keyboard_events(key, gray_frame):
                 break
+
+            text_cfg = self.config.get("visualization", {}).get("text", {})
+            pos_status = tuple(text_cfg.get("status_pos", [10, 30]))
+            scale_normal = text_cfg.get("scale_normal", 1.0)
+            scale_idle = text_cfg.get("scale_idle", 0.8)
+            thickness = text_cfg.get("thickness", 2)
+            c_track = tuple(text_cfg.get("color_tracking", [0, 255, 0]))
+            c_idle = tuple(text_cfg.get("color_idle", [0, 0, 255]))
 
             if self.reference_image is not None and self.reference_markers is not None:
                 self._process_tracking(gray_frame)
                 status_text = f"Dang track ({self.tracking_method}): gioi han {len(self.reference_markers)} markers"
                 cv2.putText(
-                    display_frame, status_text, (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2
+                    display_frame, status_text, pos_status, 
+                    cv2.FONT_HERSHEY_SIMPLEX, scale_normal, c_track, thickness
                 )
             else:
                 cv2.putText(
                     display_frame, "Nhan 'r' de chup tham chieu", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+                    pos_status, cv2.FONT_HERSHEY_SIMPLEX, scale_idle, c_idle, thickness
                 )
 
             cv2.imshow(f"Raw WebCam (/dev/video{self.camera_id})", display_frame)
@@ -134,18 +148,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     
     parser = argparse.ArgumentParser(description="Realtime tactile tracking")
-    parser.add_argument("--camera-id", type=int, default=0, help="Camera device index")
-    parser.add_argument("--arrow-scale", type=float, default=1.0, help="Arrow scale factor")
-    parser.add_argument("--min-disp", type=float, default=1.5, help="Deadzone threshold to filter out material hysteresis (pixels)")
-    parser.add_argument("--tracking-method", type=str, choices=["H", "LK"], default="H", help="Tracking method (H: Hungarian, LK: PyrLK)")
+    parser.add_argument("--config-path", default="config/pipeline_config.yaml", help="Path to YAML configuration")
     args = parser.parse_args()
 
-    pipeline = RealtimeTactileTracking(
-        camera_id=args.camera_id, 
-        arrow_scale=args.arrow_scale, 
-        min_disp=args.min_disp,
-        tracking_method=args.tracking_method
-    )
+    config_parser = load_config(args.config_path)
+    pipeline = RealtimeTactileTracking(config=config_parser.config)
     pipeline.run()
 
     """

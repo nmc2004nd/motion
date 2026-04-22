@@ -12,6 +12,7 @@ from src.utils.preprocessing import preprocess
 from src.Hungarian.Hungarian import match_markers_robust
 from src.PyrLK.PyrLK import track_markers_lk
 from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
+from src.utils.config_parser import load_config
 
 # Import SlipDetector để tính toán khả năng trượt
 from src.slip_prob.slip_prob import SlipDetector
@@ -23,41 +24,51 @@ class RealtimeSlipTracking:
     """Pipeline realtime theo dõi markers và CẢNH BÁO TRƯỢT (Slip Detection)
     Dựa trên việc kế thừa logic của base code nhưng được viết hoàn chỉnh, tách rời."""
 
-    def __init__(self, camera_id: int = 0, arrow_scale: float = 1.0, tracking_method: str = "H", slip_threshold: float = 0.8) -> None:
-        self.camera_id = camera_id
-        self.arrow_scale = arrow_scale
-        self.tracking_method = tracking_method
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self.camera_id = self.config.get("camera", {}).get("device_id", 0)
+        self.tracking_method = self.config.get("tracking", {}).get("method", "H")
+        
+        # Thêm State chuyên biệt cho Slip Detection
+        self.marker_history = []
+        self.history_length = self.config.get("slip_detection", {}).get("history_buffer_length", 5)
+        self.slip_detector = SlipDetector(config=self.config)
+        self.slip_threshold_display = self.config.get("slip_detection", {}).get("slip_threshold", 0.8)
+        self.moving_count_thresh = self.config.get("slip_detection", {}).get("moving_count_thresh", 2)
+        
+        # Load keyboard controls
+        controls = self.config.get("controls", {})
+        self.wait_key_time = controls.get("wait_key", 1)
+        self.key_capture = ord(controls.get("key_capture", "r"))
+        self.key_clear = ord(controls.get("key_clear", "c"))
+        self.key_quit = ord(controls.get("key_quit", "q"))
         
         # State của hệ thống chụp
         self.reference_image: Optional[npt.NDArray] = None
         self.reference_markers: Optional[npt.NDArray] = None
-        
-        # Thêm State chuyên biệt cho Slip Detection
-        self.marker_history = []
-        self.history_length = 5  # Dùng bộ đệm 5 frames để loại bỏ giật nháy lúc trượt (Flickering)
-        self.slip_detector = SlipDetector(min_motion_thresh=1, slip_threshold=slip_threshold)
 
-    def _wait_for_camera_warmup(self, capture: cv2.VideoCapture, frames: int = 15) -> None:
-        """Bỏ qua vài frame đầu tiên để cảm biến camera xử lý sáng."""
+    def _wait_for_camera_warmup(self, capture: cv2.VideoCapture) -> None:
+        """Bỏ qua vài frame đầu tiên để cảm biến camera tự điều chỉnh."""
+        frames = self.config.get("camera", {}).get("warmup_frames", 15)
         for _ in range(frames):
             capture.read()
 
     def _handle_keyboard_events(self, key: int, gray_frame: npt.NDArray) -> bool:
         """Xử lý thao tác bàn phím, trả về True nếu chọn thoát (q)."""
-        if key == ord('q'):
+        if key == self.key_quit:
             return True
-        elif key == ord('r'):
+        elif key == self.key_capture:
             # Chụp một frame tĩnh làm mốc (Reference)
             self.reference_image = gray_frame.copy()
-            reference_proc = preprocess(self.reference_image)
-            self.reference_markers, _ = detect_markers(reference_proc)
+            reference_proc = preprocess(self.reference_image, config=self.config)
+            self.reference_markers, _ = detect_markers(reference_proc, config=self.config)
             
             # Reset lịch sử toạ độ marker
             self.marker_history = [self.reference_markers.copy()] 
             
             logger.info(f"Đã chụp ảnh tham chiếu: Phát hiện {len(self.reference_markers)} markers.")
             
-        elif key == ord('c'):
+        elif key == self.key_clear:
             # Xóa Reference
             self.reference_image = None
             self.reference_markers = None
@@ -71,8 +82,8 @@ class RealtimeSlipTracking:
         if self.reference_image is None or self.reference_markers is None:
             return
 
-        deformed_proc = preprocess(gray_frame)
-        deformed_markers_naive, _ = detect_markers(deformed_proc)
+        deformed_proc = preprocess(gray_frame, config=self.config)
+        deformed_markers_naive, _ = detect_markers(deformed_proc, config=self.config)
 
         if len(self.reference_markers) == 0:
             return
@@ -80,14 +91,13 @@ class RealtimeSlipTracking:
         # 1. THỰC HIỆN TRACKING 
         if self.tracking_method == "LK":
             deformed_markers_tracked, valid = track_markers_lk(
-                self.reference_image, gray_frame, self.reference_markers
+                self.reference_image, gray_frame, self.reference_markers, config=self.config
             )
         else:
             if len(deformed_markers_naive) > 0:
-                max_displacement = self.reference_image.shape[1] / 10.0
                 deformed_markers_tracked, valid = match_markers_robust(
                     self.reference_markers, deformed_markers_naive, self.reference_image.shape,
-                    max_disp=max_displacement
+                    config=self.config
                 )
             else:
                 valid = np.zeros(len(self.reference_markers), dtype=bool)
@@ -115,13 +125,13 @@ class RealtimeSlipTracking:
         if valid.any():
             vis_arrows = visualize_flow_arrows(
                 deformed_proc, self.reference_markers, deformed_markers_tracked, valid,
-                scale=self.arrow_scale, save_path=None
+                config=self.config, save_path=None
             )
             cv2.imshow("Realtime Flow Arrows", vis_arrows)
 
             vis_hsv = visualize_flow_hsv(
                 self.reference_markers, deformed_markers_tracked, valid,
-                self.reference_image.shape, save_path=None
+                self.reference_image.shape, config=self.config, save_path=None
             )
             cv2.imshow("Realtime Flow HSV", vis_hsv)
 
@@ -130,16 +140,21 @@ class RealtimeSlipTracking:
             r_val = slip_info['r_value']
             moving = slip_info['moving_count']
             
-            # Cập nhật ngưỡng 0.5 theo yêu cầu để bật cờ trượt 
-            slip_status = 1 if r_val > 0.5 else 0
+            text_cfg = self.config.get("visualization", {}).get("text", {})
+            pos_slip = tuple(text_cfg.get("slip_pos", [10, 70]))
+            scale_normal = text_cfg.get("scale_normal", 0.8)
+            thickness = text_cfg.get("thickness", 2)
+            c_slip = tuple(text_cfg.get("color_slip", [0, 0, 255]))
+            c_moving = tuple(text_cfg.get("color_moving", [0, 255, 255]))
+            c_track = tuple(text_cfg.get("color_tracking", [0, 255, 0]))
+
+            slip_status = 1 if r_val > self.slip_threshold_display else 0
             
-            # Chữ đỏ nếu Slip = 1, vàng nếu đang phân tán nhẹ, xanh nếu đứng im
-            text_color = (0, 0, 255) if slip_status == 1 else ((0, 255, 255) if moving > 2 else (0, 255, 0))
+            text_color = c_slip if slip_status == 1 else (c_moving if moving > self.moving_count_thresh else c_track)
             
-            # Hiển thị gọn gàng, giữ nguyên xác suất và chuyển Slip thành 0/1
             display_text = f"Slip Prob: {r_val:.2f} | Slip: {slip_status} | Moves: {moving}"
-            cv2.putText(display_frame, display_text, (10, 70),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2)
+            cv2.putText(display_frame, display_text, pos_slip,
+                        cv2.FONT_HERSHEY_SIMPLEX, scale_normal, text_color, thickness)
 
 
     def run(self) -> None:
@@ -164,9 +179,17 @@ class RealtimeSlipTracking:
             gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             display_frame = frame.copy()
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(self.wait_key_time) & 0xFF
             if self._handle_keyboard_events(key, gray_frame):
                 break
+            
+            text_cfg = self.config.get("visualization", {}).get("text", {})
+            pos_status = tuple(text_cfg.get("status_pos", [10, 30]))
+            scale_normal = text_cfg.get("scale_normal", 0.8)
+            scale_idle = text_cfg.get("scale_idle", 0.8)
+            thickness = text_cfg.get("thickness", 2)
+            c_track = tuple(text_cfg.get("color_tracking", [0, 255, 0]))
+            c_idle = tuple(text_cfg.get("color_idle", [0, 0, 255]))
 
             if self.reference_image is not None and self.reference_markers is not None:
                 # Gọi xử lý
@@ -174,13 +197,13 @@ class RealtimeSlipTracking:
                 
                 status_text = f"Tracking ({self.tracking_method}) | {len(self.reference_markers)} markers"
                 cv2.putText(
-                    display_frame, status_text, (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2
+                    display_frame, status_text, pos_status, 
+                    cv2.FONT_HERSHEY_SIMPLEX, scale_normal, c_track, thickness
                 )
             else:
                 cv2.putText(
                     display_frame, "Nhan 'r' de chup tham chieu", 
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2
+                    pos_status, cv2.FONT_HERSHEY_SIMPLEX, scale_idle, c_idle, thickness
                 )
 
             cv2.imshow(f"WebCam w/ Slip Detection (/dev/video{self.camera_id})", display_frame)
@@ -193,18 +216,11 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     
     parser = argparse.ArgumentParser(description="Realtime tactile tracking WITH SLIP DETECTION")
-    parser.add_argument("--camera-id", type=int, default=0, help="Camera device index")
-    parser.add_argument("--arrow-scale", type=float, default=1.0, help="Arrow scale factor")
-    parser.add_argument("--tracking-method", type=str, choices=["H", "LK"], default="H", help="Tracking method (H: Hungarian, LK: PyrLK)")
-    parser.add_argument("--slip-threshold", type=float, default=0.6, help="Ngưỡng đồng nhất hướng R để cảnh báo trượt (Mặc định 0.8)")
+    parser.add_argument("--config-path", default="config/pipeline_config.yaml", help="Path to YAML configuration")
     args = parser.parse_args()
 
-    pipeline = RealtimeSlipTracking(
-        camera_id=args.camera_id, 
-        arrow_scale=args.arrow_scale, 
-        tracking_method=args.tracking_method,
-        slip_threshold=args.slip_threshold
-    )
+    config_parser = load_config(args.config_path)
+    pipeline = RealtimeSlipTracking(config=config_parser.config)
     pipeline.run()
 
 """

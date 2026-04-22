@@ -15,8 +15,7 @@ def match_markers_robust(
     ref_points: np.ndarray,
     def_points: np.ndarray,
     img_shape: tuple[int, int],
-    max_disp: float = 60.0,
-    min_disp: float = 1.5,
+    config: dict = None,
     force_center: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Tìm tương ứng marker từ ảnh tham chiếu sang ảnh biến dạng bằng Hungarian.
@@ -25,6 +24,28 @@ def match_markers_robust(
     """
     if ref_points.size == 0 or def_points.size == 0:
         return ref_points.copy(), np.zeros(len(ref_points), dtype=bool)
+
+    if config is None:
+        config = {
+            "tracking": {
+                "min_displacement": 1.5,
+                "hungarian": {
+                    "max_displacement": 60.0,
+                    "top_points_ratio": 0.1,
+                    "inward_penalty_threshold": -2.0,
+                    "penalty_multiplier": 5.0
+                }
+            }
+        }
+        
+    track_cfg = config.get("tracking", {})
+    hg_cfg = track_cfg.get("hungarian", {})
+    
+    max_disp = hg_cfg.get("max_displacement", 60.0)
+    min_disp = track_cfg.get("min_displacement", 1.5)
+    top_points_ratio = hg_cfg.get("top_points_ratio", 0.1)
+    inward_penalty_thresh = hg_cfg.get("inward_penalty_threshold", -2.0)
+    penalty_multi = hg_cfg.get("penalty_multiplier", 5.0)
 
     # Ma trận khoảng cách Euclidean cơ bản
     D_base = distance_matrix(ref_points, def_points)
@@ -37,9 +58,9 @@ def match_markers_robust(
         disps_raw = def_points[col_ind_raw] - ref_points[row_ind_raw]
         disp_mags = np.linalg.norm(disps_raw, axis=1)
         
-        # Tự động tìm tâm lực: lấy tọa độ trung bình của top 10% các điểm dịch chuyển mạnh nhất
+        # Tự động tìm tâm lực: lấy tọa độ trung bình của top x% các điểm dịch chuyển mạnh nhất
         # (Khi bị nhấn, vùng quanh tâm lực sẽ có chuyển động lớn nhất)
-        n_top = max(1, int(len(disp_mags) * 0.1))
+        n_top = max(1, int(len(disp_mags) * top_points_ratio))
         top_indices = np.argsort(disp_mags)[-n_top:]
         
         # Tâm lực tự động là trung bình của các điểm biến dạng mạnh nhất
@@ -63,8 +84,8 @@ def match_markers_robust(
     dot_prods = radial_dirs @ def_points.T - np.sum(ref_points * radial_dirs, axis=1, keepdims=True)
 
     # Áp dụng penalty nếu dot_prod âm (chuyển động hướng vào tâm quá mức)
-    inward_mask = dot_prods < -2.0  # Cho phép nhiễu dịch chuyển nhỏ ~2px
-    D[inward_mask] += np.abs(dot_prods[inward_mask]) * 5.0
+    inward_mask = dot_prods < inward_penalty_thresh  # Cho phép nhiễu dịch chuyển nhỏ ~2px
+    D[inward_mask] += np.abs(dot_prods[inward_mask]) * penalty_multi
 
     # Tối ưu hóa phân công toàn cục (Global Assignment)
     row_ind, col_ind = linear_sum_assignment(D)

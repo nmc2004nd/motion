@@ -10,13 +10,34 @@ import numpy.typing as npt
 logger = logging.getLogger(__name__)
 
 def calibrate_camera(
-    calib_dir: str = './data/calib', 
-    checkerboard_size: Tuple[int, int] = (8, 6), 
-    square_size: float = 25.0
+    config: dict = None,
 ) -> Tuple[Optional[npt.NDArray], Optional[npt.NDArray]]:
     """Hiệu chuẩn camera sử dụng các ảnh bàn cờ."""
+    if config is None:
+        config = {
+            "paths": {
+                "calib_dir": './data/calib',
+                "calib_file": 'config/calib_result.npz'
+            },
+            "calibration": {
+                "checkerboard_size": [8, 6],
+                "square_size": 25.0,
+                "criteria": {"max_iter": 30, "eps": 0.001},
+                "subpix_window": [11, 11]
+            }
+        }
+        
+    calib_dir = config.get("paths", {}).get("calib_dir", './data/calib')
+    calib_file = config.get("paths", {}).get("calib_file", 'config/calib_result.npz')
+    calib_cfg = config.get("calibration", {})
+    checkerboard_size = tuple(calib_cfg.get("checkerboard_size", [8, 6]))
+    square_size = calib_cfg.get("square_size", 25.0)
+    max_iter = calib_cfg.get("criteria", {}).get("max_iter", 30)
+    eps = calib_cfg.get("criteria", {}).get("eps", 0.001)
+    subpix_window = tuple(calib_cfg.get("subpix_window", [11, 11]))
+
     # Tiêu chí dừng (termination criteria) cho việc tinh chỉnh toạ độ góc đạt độ chính xác sub-pixel
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, max_iter, eps)
 
     # Chuẩn bị các điểm vật thể trong không gian 3D
     object_points_grid = np.zeros((checkerboard_size[0] * checkerboard_size[1], 3), np.float32)
@@ -49,7 +70,7 @@ def calibrate_camera(
         if success:
             object_points.append(object_points_grid)
             # Tinh chỉnh toạ độ các góc đạt mức sub-pixel (chính xác hơn)
-            refined_corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            refined_corners = cv2.cornerSubPix(gray, corners, subpix_window, (-1, -1), criteria)
             image_points.append(refined_corners)
 
     if not object_points:
@@ -65,13 +86,21 @@ def calibrate_camera(
     logger.debug(f"Camera Matrix:\n{camera_matrix}")
     logger.debug(f"Distortion Coefficients:\n{distortion_coeffs}")
     
-    os.makedirs('config', exist_ok=True)
-    np.savez('config/calib_result.npz', mtx=camera_matrix, dist=distortion_coeffs, rvecs=rvecs, tvecs=tvecs)
+    calib_dir_out = os.path.dirname(calib_file)
+    if calib_dir_out:
+        os.makedirs(calib_dir_out, exist_ok=True)
+    np.savez(calib_file, mtx=camera_matrix, dist=distortion_coeffs, rvecs=rvecs, tvecs=tvecs)
     
     return camera_matrix, distortion_coeffs
 
-def load_calibration(calib_file: str = 'config/calib_result.npz') -> Tuple[npt.NDArray, npt.NDArray]:
+def load_calibration(calib_file: str = None, config: dict = None) -> Tuple[npt.NDArray, npt.NDArray]:
     """Tải kết quả hiệu chuẩn camera (ma trận và hệ số biến dạng)."""
+    if calib_file is None:
+        if config is not None:
+            calib_file = config.get("paths", {}).get("calib_file", 'config/calib_result.npz')
+        else:
+            calib_file = 'config/calib_result.npz'
+
     if not os.path.exists(calib_file):
         raise FileNotFoundError(f"Calibration file '{calib_file}' not found. Please run calibration first.")
         

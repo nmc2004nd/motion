@@ -16,19 +16,40 @@ def track_markers_lk(
     img_ref: np.ndarray,
     img_def: np.ndarray,
     ref_points: np.ndarray,
-    fb_threshold: float = 2.0,
-    min_disp: float = 1.5,
+    config: dict = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Track marker từ ảnh tham chiếu sang ảnh biến dạng với kiểm tra FB."""
     if ref_points.size == 0:
         return ref_points.copy(), np.zeros((0,), dtype=bool)
 
+    if config is None:
+        # Fallback dictionary to prevent errors if config isn't passed
+        config = {
+            "tracking": {
+                "min_displacement": 1.5,
+                "pyrlk": {
+                    "win_size": [21, 21],
+                    "max_level": 3,
+                    "fb_threshold": 2.0,
+                    "term_criteria": {"max_iter": 30, "eps": 0.01}
+                }
+            }
+        }
+        
+    pyrlk_cfg = config.get("tracking", {}).get("pyrlk", {})
+    min_disp = config.get("tracking", {}).get("min_displacement", 1.5)
+    fb_threshold = pyrlk_cfg.get("fb_threshold", 2.0)
+    win_size = tuple(pyrlk_cfg.get("win_size", [21, 21]))
+    max_level = pyrlk_cfg.get("max_level", 3)
+    max_iter = pyrlk_cfg.get("term_criteria", {}).get("max_iter", 30)
+    eps = pyrlk_cfg.get("term_criteria", {}).get("eps", 0.01)
+
     lk_params = dict(
         # Cửa sổ đủ lớn để bắt được chuyển động marker.
-        winSize=(21, 21),
+        winSize=win_size,
         # Kim tự tháp đa mức giúp xử lý dịch chuyển lớn hơn.
-        maxLevel=3,
-        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+        maxLevel=max_level,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, max_iter, eps),
     )
 
     pts_ref = ref_points.reshape(-1, 1, 2).astype(np.float32)

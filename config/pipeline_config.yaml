@@ -1,0 +1,95 @@
+paths:
+  ref_image: "data/ref/my_photo_1.jpg"
+  deformed_image: "data/img/my_photo_2.jpg"
+  calib_file: "config/calib_result.npz"
+  output_dir: "outputs"
+  calib_dir: "./data/calib"
+
+camera:
+  device_id: 0
+  warmup_frames: 15
+
+calibration:
+  checkerboard_size: [8, 6]
+  square_size: 25.0
+  criteria:
+    max_iter: 30
+    eps: 0.001
+  subpix_window: [11, 11]
+
+preprocessing:
+  blur_kernel: [101, 101]
+  clahe_clip_limit: 2.5
+  clahe_grid: [8, 8]
+
+detection:
+  min_threshold: 50
+  max_threshold: 220
+  step: 10
+  min_area: 30.0
+  max_area: 500.0
+  min_circularity: 0.5
+  min_inertia: 0.3
+  min_convexity: 0.7
+
+tracking:
+  method: "LK"
+  min_displacement: 2
+  max_displacement_ratio: 0.1
+  pyrlk:
+    win_size: [21, 21]
+    max_level: 3
+    fb_threshold: 2.0
+    term_criteria:
+      max_iter: 30
+      eps: 0.01
+  hungarian:
+    max_displacement: 60.0
+    top_points_ratio: 0.1
+    inward_penalty_threshold: -2.0
+    penalty_multiplier: 5.0
+
+slip_detection:
+  slip_threshold: 0.8
+  min_motion_thresh: 1.0
+  min_moving_markers: 5
+  alpha: 0.3
+  rebound_dot_prod_threshold: -0.1
+  history_buffer_length: 5
+  moving_count_thresh: 2
+
+visualization:
+  arrow_scale: 2.0
+  arrow_non_moving_color: [180, 180, 180]
+  arrow_moving_color: [0, 255, 0] # Will be updated dynamically by intensity
+  arrow_thickness: 1
+  arrow_tip_length: 0.3
+  start_marker_color: [255, 255, 0]
+  hsv:
+    start_marker_color: [0, 0, 0]
+    start_marker_radius: 1
+    multiplier: 3
+    saturation_multiplier: 25
+    value: 255
+    hue_divisor: 2
+  keypoint_color: [0, 255, 0]
+  motion_magnitude_threshold: 0.3
+  color_intensity_multiplier: 20
+  summary_figsize: [18, 10]
+  summary_dpi: 100
+  text:
+    status_pos: [10, 30]
+    slip_pos: [10, 70]
+    scale_normal: 1.0
+    scale_idle: 0.8
+    thickness: 2
+    color_tracking: [0, 255, 0]
+    color_idle: [0, 0, 255]
+    color_slip: [0, 0, 255]
+    color_moving: [0, 255, 255]
+
+controls:
+  wait_key: 1
+  key_capture: "r"
+  key_clear: "c"
+  key_quit: "q"

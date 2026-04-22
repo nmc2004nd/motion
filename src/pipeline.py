@@ -11,6 +11,7 @@ import numpy as np
 from .utils.detection import detect_markers
 from .utils.preprocessing import preprocess
 from .utils.calibration import load_calibration, undistort_image
+from .utils.config_parser import load_config
 from .Hungarian.Hungarian import match_markers_robust
 from .PyrLK.PyrLK import track_markers_lk
 from .utils.visualization import visualize_flow_arrows, visualize_flow_hsv
@@ -18,24 +19,21 @@ from .utils.visualization import visualize_flow_arrows, visualize_flow_hsv
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PipelineConfig:
-    reference_image_path: str = "data/ref/my_photo_1.jpg"
-    deformed_image_path: str = "data/img/sample_0010.png"
-    calib_file_path: str = "config/calib_result.npz"
-    output_dir: str = "outputs"
-    arrow_scale: float = 1.0
-    tracking_method: str = "H"  # 'H' cho Hungarian, 'LK' cho PyrLK
-    use_calibration: bool = False
-
-
 class TactileMarkerTrackingPipeline:
     """Pipeline theo dõi marker tactile từ đầu đến cuối với các bước được module hóa."""
 
-    def __init__(self, config: PipelineConfig | None = None) -> None:
-        self.config = config or PipelineConfig()
-        self.output_dir = Path(self.config.output_dir) / self.config.tracking_method
+    def __init__(self, config: dict) -> None:
+        self.config = config
+        self.tracking_method = self.config.get("tracking", {}).get("method", "H")
+        output_dir_base = self.config.get("paths", {}).get("output_dir", "outputs")
+        self.output_dir = Path(output_dir_base) / self.tracking_method
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.use_calib = self.config.get("pipeline", {}).get("use_calibration", False)
+        self.ref_image_path = self.config.get("paths", {}).get("ref_image", "data/ref/my_photo_1.jpg")
+        self.def_image_path = self.config.get("paths", {}).get("deformed_image", "data/img/my_photo_2.jpg")
+        self.calib_file_path = self.config.get("paths", {}).get("calib_file", "config/calib_result.npz")
+        self.summary_figsize = tuple(self.config.get("visualization", {}).get("summary_figsize", [18, 10]))
+        self.summary_dpi = self.config.get("visualization", {}).get("summary_dpi", 100)
 
     def _read_gray(self, image_path: str) -> np.ndarray:
         img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -53,7 +51,7 @@ class TactileMarkerTrackingPipeline:
         vis_hsv: np.ndarray,
         marker_count: int,
     ) -> None:
-        fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+        fig, axes = plt.subplots(2, 3, figsize=self.summary_figsize)
         axes[0, 0].imshow(img_reference, cmap="gray")
         axes[0, 0].set_title("1. Raw reference")
         axes[0, 1].imshow(img_deformed, cmap="gray")
@@ -72,16 +70,16 @@ class TactileMarkerTrackingPipeline:
             axis.axis("off")
 
         plt.tight_layout()
-        plt.savefig(self.output_dir / "06_summary.png", dpi=100, bbox_inches="tight")
+        plt.savefig(self.output_dir / "06_summary.png", dpi=self.summary_dpi, bbox_inches="tight")
         plt.close(fig)
 
     def _load_and_undistort_images(self) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        img_reference_raw = self._read_gray(self.config.reference_image_path)
-        img_deformed_raw = self._read_gray(self.config.deformed_image_path)
+        img_reference_raw = self._read_gray(self.ref_image_path)
+        img_deformed_raw = self._read_gray(self.def_image_path)
 
-        if self.config.use_calibration:
-            logger.info(f"Dang tai hieu chuan camera tu {self.config.calib_file_path}...")
-            camera_matrix, dist_coeffs = load_calibration(self.config.calib_file_path)
+        if self.use_calib:
+            logger.info(f"Dang tai hieu chuan camera tu {self.calib_file_path}...")
+            camera_matrix, dist_coeffs = load_calibration(config=self.config)
             img_reference = undistort_image(img_reference_raw, camera_matrix, dist_coeffs)
             img_deformed = undistort_image(img_deformed_raw, camera_matrix, dist_coeffs)
             
@@ -96,27 +94,28 @@ class TactileMarkerTrackingPipeline:
         return img_reference_raw, img_deformed_raw, img_reference, img_deformed
 
     def _preprocess_images(self, img_reference: np.ndarray, img_deformed: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        reference_proc = preprocess(img_reference)
-        deformed_proc = preprocess(img_deformed)
+        reference_proc = preprocess(img_reference, config=self.config)
+        deformed_proc = preprocess(img_deformed, config=self.config)
         cv2.imwrite(str(self.output_dir / "02_reference_preprocessed.png"), reference_proc)
         cv2.imwrite(str(self.output_dir / "02_deformed_preprocessed.png"), deformed_proc)
         logger.info("Qua trinh tien xu ly hoan tat.")
         return reference_proc, deformed_proc
 
     def _detect_markers(self, reference_proc: np.ndarray, deformed_proc: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        reference_markers, reference_keypoints = detect_markers(reference_proc)
+        keypoint_color = tuple(self.config.get("visualization", {}).get("keypoint_color", [0, 255, 0]))
+        reference_markers, reference_keypoints = detect_markers(reference_proc, config=self.config)
         logger.info(f"Da phat hien {len(reference_markers)} marker trong anh tham chieu.")
         vis_reference = cv2.drawKeypoints(
             reference_proc,
             reference_keypoints,
             None,
-            (0, 255, 0),
+            keypoint_color,
             cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
         )
         cv2.imwrite(str(self.output_dir / "03_reference_markers.png"), vis_reference)
 
         # Phat hien "ngay tho" tren frame bien dang de the hien cac van de ve su tuong ung
-        deformed_markers_naive, deformed_keypoints_naive = detect_markers(deformed_proc)
+        deformed_markers_naive, deformed_keypoints_naive = detect_markers(deformed_proc, config=self.config)
         logger.info(
             f"Phat hien ngay tho tren anh bien dang: {len(deformed_markers_naive)} markers "
             "(sai lech so luong = van de ve su tuong ung!)"
@@ -125,7 +124,7 @@ class TactileMarkerTrackingPipeline:
             deformed_proc,
             deformed_keypoints_naive,
             None,
-            (0, 255, 0),
+            keypoint_color,
             cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS,
         )
         cv2.imwrite(str(self.output_dir / "03_deformed_markers_naive.png"), vis_deformed_naive)
@@ -139,15 +138,14 @@ class TactileMarkerTrackingPipeline:
         reference_markers: np.ndarray, 
         deformed_markers_naive: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        if self.config.tracking_method == "LK":
-            deformed_markers_tracked, valid = track_markers_lk(img_reference, img_deformed, reference_markers)
+        if self.tracking_method == "LK":
+            deformed_markers_tracked, valid = track_markers_lk(img_reference, img_deformed, reference_markers, config=self.config)
         else:
-            max_displacement = img_reference.shape[1] / 10.0
             deformed_markers_tracked, valid = match_markers_robust(
-                reference_markers, deformed_markers_naive, img_reference.shape, max_disp=max_displacement
+                reference_markers, deformed_markers_naive, img_reference.shape, config=self.config
             )
             
-        logger.info(f"Da theo doi thanh cong {valid.sum()}/{len(reference_markers)} markers (phuong phap: {self.config.tracking_method}).")
+        logger.info(f"Da theo doi thanh cong {valid.sum()}/{len(reference_markers)} markers (phuong phap: {self.tracking_method}).")
 
         if valid.any():
             displacements = deformed_markers_tracked - reference_markers
@@ -174,7 +172,7 @@ class TactileMarkerTrackingPipeline:
             reference_markers,
             deformed_markers_tracked,
             valid,
-            scale=self.config.arrow_scale,
+            config=self.config,
             save_path=str(self.output_dir / "04_flow_arrows.png"),
         )
         vis_hsv = visualize_flow_hsv(
@@ -182,6 +180,7 @@ class TactileMarkerTrackingPipeline:
             deformed_markers_tracked,
             valid,
             img_shape,
+            config=self.config,
             save_path=str(self.output_dir / "05_flow_hsv.png"),
         )
         logger.info("Da luu hinh anh truc quan hoa.")

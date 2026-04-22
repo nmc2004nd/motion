@@ -11,22 +11,29 @@ class SlipDetector:
     đầu vào (prev_markers và current_markers) cùng mảng trạng thái hợp lệ (valid_mask).
     """
     
-    def __init__(self, min_motion_thresh: float = 0.5, slip_threshold: float = 0.8, min_moving_markers: int = 5, alpha: float = 0.3):
+    def __init__(self, config: dict = None):
         """
         Khởi tạo SlipDetector.
-        
-        Args:
-            min_motion_thresh (float): Ngưỡng di chuyển tối thiểu (pixel) để loại bỏ nhiễu rung camera.
-            slip_threshold (float): Ngưỡng hệ số đồng hướng R (0 -> 1) để xác định trượt. 
-                                    R càng gần 1 tức là các marker càng di chuyển song song.
-            min_moving_markers (int): Số lượng marker tối thiểu đang chuyển động để có thể kết luận trượt.
-            alpha (float): Hệ số làm mượt (EMA) cho temporal smoothing. (0.0 -> 1.0, 1.0 = không làm mượt).
         """
-        self.min_motion_thresh = min_motion_thresh
-        self.slip_threshold = slip_threshold
-        self.min_moving_markers = min_moving_markers
-        self.alpha = alpha
+        if config is None:
+            config = {
+                "slip_detection": {
+                    "min_motion_thresh": 0.5,
+                    "slip_threshold": 0.8,
+                    "min_moving_markers": 5,
+                    "alpha": 0.3,
+                    "rebound_dot_prod_threshold": -0.1
+                }
+            }
+            
+        slip_cfg = config.get("slip_detection", {})
+        self.min_motion_thresh = slip_cfg.get("min_motion_thresh", 0.5)
+        self.slip_threshold = slip_cfg.get("slip_threshold", 0.8)
+        self.min_moving_markers = slip_cfg.get("min_moving_markers", 5)
+        self.alpha = slip_cfg.get("alpha", 0.3)
+        self.rebound_dot_prod_threshold = slip_cfg.get("rebound_dot_prod_threshold", -0.1)
         self._smoothed_r = 0.0  # Trạng thái để làm mượt theo thời gian
+        
         
     def reset(self):
         """Reset các bộ đệm làm mượt."""
@@ -84,7 +91,7 @@ class SlipDetector:
             # Tính hướng tương đối giữa (chuyển động của marker) và (sự móp méo chung)
             # Dot_product < 0 nghĩa là vector vận tốc đang kéo marker ngược thẳng về vị trí nghỉ lúc đầu!
             dot_prods = np.sum(displacements * deformation, axis=1)
-            rebound_mask = dot_prods < -0.1
+            rebound_mask = dot_prods < self.rebound_dot_prod_threshold
             
             # Nếu marker đang nảy ngược đàn hồi, loại bỏ nó khỏi bộ lọc trượt
             motion_mask = motion_mask & (~rebound_mask)

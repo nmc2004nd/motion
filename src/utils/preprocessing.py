@@ -7,21 +7,35 @@ import numpy as np
 #+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+
 # BƯỚC 1: TIỀN XỬ LÝ — khử chiếu sáng không đồng đều (vignetting)
 #+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+#+
-def preprocess(img_gray: np.ndarray) -> np.ndarray:
+def preprocess(img_gray: np.ndarray, config: dict = None) -> np.ndarray:
     """
     Chuẩn hóa độ chiếu sáng bằng phép trừ nền.
     LED thường gây sáng mạnh ở giữa và tối dần về rìa.
     Ta ước lượng nền chiếu sáng rồi loại bỏ nó.
     """
+    if config is None:
+        config = {
+            "preprocessing": {
+                "blur_kernel": [101, 101],
+                "clahe_clip_limit": 2.5,
+                "clahe_grid": [8, 8]
+            }
+        }
+    
+    pre_cfg = config.get("preprocessing", {})
+    blur_kernel = tuple(pre_cfg.get("blur_kernel", [101, 101]))
+    clip_limit = pre_cfg.get("clahe_clip_limit", 2.5)
+    grid_size = tuple(pre_cfg.get("clahe_grid", [8, 8]))
+
     # Gaussian blur kernel lớn để xấp xỉ nền chiếu sáng.
-    background = cv2.GaussianBlur(img_gray, (101, 101), 0)
+    background = cv2.GaussianBlur(img_gray, blur_kernel, 0)
 
     # Trừ nền và chuẩn hóa lại dải cường độ để marker nổi bật hơn.
     normalized = cv2.subtract(img_gray, background)
     normalized = cv2.normalize(normalized, None, 0, 255, cv2.NORM_MINMAX)
 
     # CLAHE tăng tương phản cục bộ, hữu ích ở vùng có tương phản thấp.
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=grid_size)
     enhanced = clahe.apply(normalized.astype(np.uint8))
     return enhanced
 

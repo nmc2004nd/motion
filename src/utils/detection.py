@@ -23,10 +23,26 @@ class BlobDetectorConfig:
     min_inertia_ratio: float = 0.3
     min_convexity: float = 0.7
 
+    @classmethod
+    def from_dict(cls, config_dict: dict):
+        det_cfg = config_dict.get("detection", {})
+        return cls(
+            min_threshold=det_cfg.get("min_threshold", 50),
+            max_threshold=det_cfg.get("max_threshold", 220),
+            threshold_step=det_cfg.get("step", 10),
+            min_area=det_cfg.get("min_area", 30.0),
+            max_area=det_cfg.get("max_area", 500.0),
+            min_circularity=det_cfg.get("min_circularity", 0.5),
+            min_inertia_ratio=det_cfg.get("min_inertia", 0.3),
+            min_convexity=det_cfg.get("min_convexity", 0.7),
+        )
 
-def create_blob_detector(config: BlobDetectorConfig | None = None) -> cv2.SimpleBlobDetector:
+def create_blob_detector(config: BlobDetectorConfig | dict | None = None) -> cv2.SimpleBlobDetector:
     """Tạo detector blob được tinh chỉnh cho marker sáng, gần tròn."""
-    cfg = config or BlobDetectorConfig()
+    if isinstance(config, dict):
+        cfg = BlobDetectorConfig.from_dict(config)
+    else:
+        cfg = config or BlobDetectorConfig()
 
     params = cv2.SimpleBlobDetector_Params()
     # Marker màu trắng trên nền tối.
@@ -59,7 +75,7 @@ def create_blob_detector(config: BlobDetectorConfig | None = None) -> cv2.Simple
 
 
 def detect_markers(
-    img_processed: np.ndarray, config: BlobDetectorConfig | None = None
+    img_processed: np.ndarray, config: BlobDetectorConfig | dict | None = None
 ) -> tuple[np.ndarray, list[cv2.KeyPoint]]:
     """Trả về tâm marker dạng mảng float Nx2 và danh sách keypoint OpenCV."""
     detector = create_blob_detector(config=config)
