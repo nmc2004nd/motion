@@ -17,6 +17,7 @@ def track_markers_lk(
     img_def: np.ndarray,
     ref_points: np.ndarray,
     fb_threshold: float = 2.0,
+    min_disp: float = 1.5,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Track marker từ ảnh tham chiếu sang ảnh biến dạng với kiểm tra FB."""
     if ref_points.size == 0:
@@ -42,7 +43,13 @@ def track_markers_lk(
     # Forward-backward check để loại bỏ track không ổn định.
     fb_error = np.linalg.norm(pts_back.reshape(-1, 2) - ref_points, axis=1)
     valid = (status.flatten() == 1) & (status_back.flatten() == 1) & (fb_error < fb_threshold)
-    return pts_def.reshape(-1, 2), valid
+    
+    pts_def = pts_def.reshape(-1, 2)
+    # Deadzone filter: bỏ qua các chuyển động quá nhỏ do trễ đàn hồi vật liệu
+    disps = np.linalg.norm(pts_def - ref_points, axis=1)
+    pts_def[disps < min_disp] = ref_points[disps < min_disp]
+    
+    return pts_def, valid
 
 if __name__ == "__main__":
     # Test nhanh trên một cặp ảnh mẫu.

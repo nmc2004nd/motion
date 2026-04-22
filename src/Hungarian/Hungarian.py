@@ -16,6 +16,7 @@ def match_markers_robust(
     def_points: np.ndarray,
     img_shape: tuple[int, int],
     max_disp: float = 60.0,
+    min_disp: float = 1.5,
     force_center: np.ndarray = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Tìm tương ứng marker từ ảnh tham chiếu sang ảnh biến dạng bằng Hungarian.
@@ -75,7 +76,10 @@ def match_markers_robust(
         actual_dist = np.linalg.norm(def_points[c] - ref_points[r])
         # Loại bỏ các match quá xa (do thiếu marker)
         if actual_dist < max_disp:
-            tracked_points[r] = def_points[c]
+            if actual_dist < min_disp:
+                tracked_points[r] = ref_points[r]
+            else:
+                tracked_points[r] = def_points[c]
             valid[r] = True
 
     return tracked_points, valid

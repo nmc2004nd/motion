@@ -210,6 +210,6 @@ if __name__ == "__main__":
 """
 python -m src.slip_prob.realtime_slip_pipeline \
        --camera-id 0 \
-       --tracking-method LK \
+       --tracking-method H \
        --slip-threshold 0.6
        """

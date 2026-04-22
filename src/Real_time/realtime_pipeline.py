@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class RealtimeTactileTracking:
     """Pipeline realtime để theo dõi các marker tactile từ luồng webcam."""
 
-    def __init__(self, camera_id: int = 0, arrow_scale: float = 1.0, tracking_method: str = "H") -> None:
+    def __init__(self, camera_id: int = 0, arrow_scale: float = 1.0, tracking_method: str = "H", min_disp: float = 1.5) -> None:
         self.camera_id = camera_id
         self.arrow_scale = arrow_scale
         self.tracking_method = tracking_method
+        self.min_disp = min_disp
         self.reference_image: Optional[npt.NDArray] = None
         self.reference_markers: Optional[npt.NDArray] = None
 
@@ -58,14 +59,15 @@ class RealtimeTactileTracking:
 
         if self.tracking_method == "LK":
             deformed_markers_tracked, valid = track_markers_lk(
-                self.reference_image, gray_frame, self.reference_markers
+                self.reference_image, gray_frame, self.reference_markers,
+                min_disp=self.min_disp
             )
         else:
             if len(deformed_markers_naive) > 0:
                 max_displacement = self.reference_image.shape[1] / 10.0
                 deformed_markers_tracked, valid = match_markers_robust(
                     self.reference_markers, deformed_markers_naive, self.reference_image.shape,
-                    max_disp=max_displacement
+                    max_disp=max_displacement, min_disp=self.min_disp
                 )
             else:
                 valid = np.zeros(len(self.reference_markers), dtype=bool)
@@ -134,12 +136,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Realtime tactile tracking")
     parser.add_argument("--camera-id", type=int, default=0, help="Camera device index")
     parser.add_argument("--arrow-scale", type=float, default=1.0, help="Arrow scale factor")
+    parser.add_argument("--min-disp", type=float, default=1.5, help="Deadzone threshold to filter out material hysteresis (pixels)")
     parser.add_argument("--tracking-method", type=str, choices=["H", "LK"], default="H", help="Tracking method (H: Hungarian, LK: PyrLK)")
     args = parser.parse_args()
 
     pipeline = RealtimeTactileTracking(
         camera_id=args.camera_id, 
         arrow_scale=args.arrow_scale, 
+        min_disp=args.min_disp,
         tracking_method=args.tracking_method
     )
     pipeline.run()
+
+    """
+    python -m src.Real_time.realtime_pipeline --tracking-method H
+    python -m src.Real_time.realtime_pipeline --tracking-method H --min-disp 2.0
+    
+    """
