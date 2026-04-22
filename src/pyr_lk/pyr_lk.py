@@ -74,8 +74,8 @@ def track_markers_lk(
 
 if __name__ == "__main__":
     # Test nhanh trên một cặp ảnh mẫu.
-    img_ref = cv2.imread("/home/nmc/ManhCuong/motion/data/ref/my_photo_1.jpg", cv2.IMREAD_GRAYSCALE)
-    img_def = cv2.imread("/home/nmc/ManhCuong/motion/data/img/my_photo_2.jpg", cv2.IMREAD_GRAYSCALE)
+    img_ref = cv2.imread("/data/ref/my_photo_1.jpg", cv2.IMREAD_GRAYSCALE)
+    img_def = cv2.imread("/data/img/my_photo_2.jpg", cv2.IMREAD_GRAYSCALE)
 
     ref_proc = preprocess(img_ref)
     def_proc = preprocess(img_def)

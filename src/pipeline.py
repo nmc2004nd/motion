@@ -12,8 +12,8 @@ from .utils.detection import detect_markers
 from .utils.preprocessing import preprocess
 from .utils.calibration import load_calibration, undistort_image
 from .utils.config_parser import load_config
-from .Hungarian.Hungarian import match_markers_robust
-from .PyrLK.PyrLK import track_markers_lk
+from .hungarian.hungarian import match_markers_robust
+from .pyr_lk.pyr_lk import track_markers_lk
 from .utils.visualization import visualize_flow_arrows, visualize_flow_hsv
 
 logger = logging.getLogger(__name__)
