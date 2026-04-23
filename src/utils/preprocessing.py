@@ -30,15 +30,10 @@ def preprocess(img_gray: np.ndarray, config: dict = None, _clahe=None) -> np.nda
     clip_limit = pre_cfg.get("clahe_clip_limit", 2.5)
     grid_size = tuple(pre_cfg.get("clahe_grid", [8, 8]))
 
-    # Ước lượng nền chiếu sáng trên ảnh thu nhỏ 4x để tăng tốc ~16x.
-    # Vùng phủ không gian tương đương: sigma gốc ≈ 15.5px, sigma_small * 4 ≈ 16.4px.
-    h, w = img_gray.shape[:2]
-    ds = 4
-    sw, sh = max(16, w // ds), max(16, h // ds)
-    small = cv2.resize(img_gray, (sw, sh), interpolation=cv2.INTER_AREA)
-    small_bk = max(3, (blur_kernel[0] // ds) | 1)  # kernel lẻ, tối thiểu 3
-    bg_small = cv2.GaussianBlur(small, (small_bk, small_bk), 0)
-    background = cv2.resize(bg_small, (w, h), interpolation=cv2.INTER_LINEAR)
+    # Ước lượng nền chiếu sáng bằng box filter (integral image → O(1)/pixel).
+    # Nhanh hơn GaussianBlur(101×101) ~10-20x và không tạo grid artifacts
+    # như cách downsample+upsample, giữ nguyên chất lượng phát hiện marker.
+    background = cv2.blur(img_gray, blur_kernel)
 
     # Trừ nền và chuẩn hóa lại dải cường độ để marker nổi bật hơn.
     normalized = cv2.subtract(img_gray, background)

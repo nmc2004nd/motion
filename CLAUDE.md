@@ -21,7 +21,7 @@ pip install opencv-python numpy scipy matplotlib pyyaml
 ```bash
 python -m src.main --config-path config/pipeline_config.yaml
 ```
-Kết quả xuất ra `outputs/{H|LK}/` dưới dạng 6 ảnh PNG.
+Kết quả xuất ra `outputs/` dưới dạng 6 ảnh PNG.
 
 ### Theo dõi thời gian thực (không có slip detection)
 ```bash
@@ -74,50 +74,91 @@ Mỗi bước được tách thành module độc lập trong `src/utils/`. Pipe
 **Chế độ batch:**
 ```
 reference.jpg → preprocess → detect (N markers) ─┐
-                                                   ├→ track/match → visualize → outputs/
-deformed.jpg  → preprocess → detect (M markers) ─┘
+                                                   ├→ LK track → visualize → outputs/
+deformed.jpg  → preprocess                        ─┘
 ```
 
 **Chế độ thời gian thực (slip detection):**
 ```
 webcam → grayscale → preprocess → detect
                                      ↓
-         [nhấn 'r']               match/track ← reference đã lưu
+         [nhấn 'r']               LK track ← reference đã lưu
          reference → detect          ↓
                               validity mask
                                      ↓
                   slip_detector ← history buffer (5 frames)
                                      ↓
-                  hiển thị (arrows + HSV + slip status)
+                  hiển thị (arrows  + slip status)
 ```
 
 ## Thuật toán theo dõi
 
-Chọn thuật toán qua `tracking.method` trong config (`"LK"` hoặc `"H"`):
-
-**Lucas-Kanade (`src/pyr_lk/pyr_lk.py`)**
-- Pyramid LK với forward-backward consistency check
+Hệ thống chỉ sử dụng **Pyramid Lucas-Kanade** (`src/pyr_lk/pyr_lk.py`):
+- Forward tracking → backward tracking → so sánh để loại điểm trôi (forward-backward check)
 - Ngưỡng FB error: 2.0 px
-- Deadzone dịch chuyển tối thiểu: 1.5 px (lọc nhiễu đàn hồi vật liệu)
+- **Deadzone**: dịch chuyển < 2 px bị reset về vị trí tham chiếu (lọc nhiễu đàn hồi vật liệu)
+- Tham số: `win_size=(21,21)`, `max_level=3` (pyramid depth), `fb_threshold=2.0`
 
-**Hungarian (`src/hungarian/hungarian.py`)**
-- Phát hiện marker ở cả 2 frame, ghép cặp qua Hungarian algorithm
-- Áp dụng **radial expansion penalty**: phạt chuyển động hướng vào tâm (ràng buộc vật lý xúc giác)
-- Ngưỡng dịch chuyển tối đa: 60 px
-- Phù hợp hơn LK khi biến dạng lớn
+> Lưu ý: Thuật toán Hungarian (`src/hungarian/`) đã bị xóa khỏi codebase.
 
 ## Phát hiện trượt
 
 `SlipDetector` (`src/slip_prob/slip_prob.py`) dùng thống kê vòng tròn:
-- Tính **Mean Resultant Vector Length (R)** từ góc dịch chuyển
-- R > 0.8 (mặc định) → slip
-- Áp dụng exponential moving average (α=0.3) để làm mượt theo thời gian
+1. Lọc marker không hợp lệ và dịch chuyển < `min_motion_thresh` (1.0 px)
+2. **Rebound filtering**: loại marker đang hồi phục đàn hồi (dot product vận tốc · biến dạng < ngưỡng)
+3. Kiểm tra đủ số marker đang di chuyển (≥ `min_moving_markers = 5`)
+4. Tính **Mean Resultant Vector Length (R)** từ góc dịch chuyển, có trọng số theo độ lớn
+5. Áp dụng EMA: `R_smooth = α * R_raw + (1-α) * R_prev` (α = 0.3)
+6. Phân loại: `is_slip = (R_smooth > slip_threshold)`, mặc định `slip_threshold = 0.8`
+
+**Hiển thị slip status:**
+- Xanh lá: đang theo dõi ổn định
+- Vàng: marker đang di chuyển nhưng chưa đủ điều kiện slip
+- Đỏ: slip được phát hiện
+
+## Tối ưu hiệu năng thời gian thực
+
+Các đối tượng được tạo một lần và tái sử dụng qua các frame:
+- `_clahe`: đối tượng CLAHE (tránh khởi tạo lại mỗi frame)
+- `_blob_detector`: SimpleBlobDetector
 
 ## Cấu hình
 
 Tất cả tham số trong `config/pipeline_config.yaml`. Dùng `ConfigParser` (`src/utils/config_parser.py`) để truy cập bằng dot-notation (ví dụ: `"tracking.pyrlk.win_size"`).
 
 Các nhóm cấu hình chính: `paths`, `tracking`, `preprocessing`, `detection`, `slip_detection`, `visualization`, `camera`, `calibration`, `controls`.
+
+Tham số quan trọng:
+
+| Nhóm | Tham số | Mặc định | Ý nghĩa |
+|------|---------|----------|---------|
+| `tracking.pyrlk` | `win_size` | [21, 21] | Cửa sổ tìm kiếm LK |
+| | `max_level` | 3 | Số tầng pyramid |
+| | `fb_threshold` | 2.0 | Ngưỡng lỗi forward-backward (px) |
+| | `min_displacement` | 2 | Deadzone (px) |
+| `preprocessing` | `blur_kernel` | [101, 101] | Kernel ước lượng nền |
+| | `clahe_clip_limit` | 2.5 | Cường độ tăng cường độ tương phản |
+| `detection` | `min_area` | 30 | Diện tích blob tối thiểu (px²) |
+| | `max_area` | 500 | Diện tích blob tối đa |
+| | `min_circularity` | 0.5 | Độ tròn (0–1) |
+| `slip_detection` | `slip_threshold` | 0.8 | Ngưỡng R để phân loại slip |
+| | `min_motion_thresh` | 1.0 | Dịch chuyển tối thiểu để tính (px) |
+| | `min_moving_markers` | 5 | Số marker tối thiểu để detect slip |
+| | `alpha` | 0.3 | Hệ số EMA |
+| | `history_buffer_length` | 5 | Số frame lưu lịch sử |
+
+## Tiền xử lý ảnh (`src/utils/preprocessing.py`)
+
+1. **Ước lượng nền**: `cv2.blur` với kernel 101×101 (loại vignetting LED)
+2. **Trừ nền**: `cv2.subtract(img, background)` → marker nổi rõ trên nền đồng đều
+3. **Chuẩn hóa**: stretch về [0, 255]
+4. **CLAHE**: tăng cường độ tương phản cục bộ (`clip_limit=2.5`, `grid=(8,8)`)
+
+## Trực quan hóa (`src/utils/visualization.py`)
+
+**Arrows** (`visualize_flow_arrows`):
+- Mũi tên từ vị trí tham chiếu → vị trí biến dạng, scale 3×
+- Xám: marker không di chuyển; vàng: vị trí gốc; đỏ–vàng: mũi tên (độ sáng ∝ độ lớn dịch chuyển)
 
 ## Dữ liệu
 

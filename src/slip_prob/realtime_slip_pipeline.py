@@ -7,11 +7,10 @@ import numpy as np
 import numpy.typing as npt
 
 # Tận dụng các module tính toán, hình ảnh từ base code thông qua absolute import
-from src.utils.detection import detect_markers
+from src.utils.detection import detect_markers, create_blob_detector
 from src.utils.preprocessing import preprocess
-from src.hungarian.hungarian import match_markers_robust
 from src.pyr_lk.pyr_lk import track_markers_lk
-from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
+from src.utils.visualization import visualize_flow_arrows
 from src.utils.config_parser import load_config
 
 # Import SlipDetector để tính toán khả năng trượt
@@ -27,8 +26,7 @@ class RealtimeSlipTracking:
     def __init__(self, config: dict) -> None:
         self.config = config
         self.camera_id = self.config.get("camera", {}).get("device_id", 0)
-        self.tracking_method = self.config.get("tracking", {}).get("method", "H")
-        
+
         # Thêm State chuyên biệt cho Slip Detection
         self.marker_history = []
         self.history_length = self.config.get("slip_detection", {}).get("history_buffer_length", 5)
@@ -43,7 +41,13 @@ class RealtimeSlipTracking:
         self.key_clear = ord(controls.get("key_clear", "c"))
         self.key_quit = ord(controls.get("key_quit", "q"))
         
-        # State của hệ thống chụp
+        pre_cfg = config.get("preprocessing", {})
+        self._clahe = cv2.createCLAHE(
+            clipLimit=pre_cfg.get("clahe_clip_limit", 2.5),
+            tileGridSize=tuple(pre_cfg.get("clahe_grid", [8, 8])),
+        )
+        self._blob_detector = create_blob_detector(config=config)
+
         self.reference_image: Optional[npt.NDArray] = None
         self.reference_markers: Optional[npt.NDArray] = None
 
@@ -60,8 +64,10 @@ class RealtimeSlipTracking:
         elif key == self.key_capture:
             # Chụp một frame tĩnh làm mốc (Reference)
             self.reference_image = gray_frame.copy()
-            reference_proc = preprocess(self.reference_image, config=self.config)
-            self.reference_markers, _ = detect_markers(reference_proc, config=self.config)
+            reference_proc = preprocess(self.reference_image, config=self.config, _clahe=self._clahe)
+            self.reference_markers, _ = detect_markers(
+                reference_proc, config=self.config, _detector=self._blob_detector
+            )
             
             # Reset lịch sử toạ độ marker
             self.marker_history = [self.reference_markers.copy()] 
@@ -82,25 +88,13 @@ class RealtimeSlipTracking:
         if self.reference_image is None or self.reference_markers is None:
             return
 
-        deformed_proc = preprocess(gray_frame, config=self.config)
-        deformed_markers_naive, _ = detect_markers(deformed_proc, config=self.config)
-
         if len(self.reference_markers) == 0:
             return
 
-        # 1. THỰC HIỆN TRACKING 
-        if self.tracking_method == "LK":
-            deformed_markers_tracked, valid = track_markers_lk(
-                self.reference_image, gray_frame, self.reference_markers, config=self.config
-            )
-        else:
-            if len(deformed_markers_naive) > 0:
-                deformed_markers_tracked, valid = match_markers_robust(
-                    self.reference_markers, deformed_markers_naive, self.reference_image.shape,
-                    config=self.config
-                )
-            else:
-                valid = np.zeros(len(self.reference_markers), dtype=bool)
+        # 1. THỰC HIỆN TRACKING
+        deformed_markers_tracked, valid = track_markers_lk(
+            self.reference_image, gray_frame, self.reference_markers, config=self.config
+        )
 
         # 2. KIỂM TRA TRƯỢT (SLIP DETECTION)
         slip_info = None
@@ -124,16 +118,10 @@ class RealtimeSlipTracking:
         # 3. HIỂN THỊ VISUALIZATION BASE
         if valid.any():
             vis_arrows = visualize_flow_arrows(
-                deformed_proc, self.reference_markers, deformed_markers_tracked, valid,
+                gray_frame, self.reference_markers, deformed_markers_tracked, valid,
                 config=self.config, save_path=None
             )
             cv2.imshow("Realtime Flow Arrows", vis_arrows)
-
-            vis_hsv = visualize_flow_hsv(
-                self.reference_markers, deformed_markers_tracked, valid,
-                self.reference_image.shape, config=self.config, save_path=None
-            )
-            cv2.imshow("Realtime Flow HSV", vis_hsv)
 
         # 4. HIỂN THỊ TÌNH TRẠNG TRƯỢT LÊN WEBCAM DISPLAY
         if slip_info is not None:
@@ -195,7 +183,7 @@ class RealtimeSlipTracking:
                 # Gọi xử lý
                 self._process_tracking(gray_frame, display_frame)
                 
-                status_text = f"Tracking ({self.tracking_method}) | {len(self.reference_markers)} markers"
+                status_text = f"Tracking (LK) | {len(self.reference_markers)} markers"
                 cv2.putText(
                     display_frame, status_text, pos_status, 
                     cv2.FONT_HERSHEY_SIMPLEX, scale_normal, c_track, thickness

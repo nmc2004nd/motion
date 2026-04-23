@@ -33,9 +33,7 @@ detection:
   min_convexity: 0.7
 
 tracking:
-  method: "LK"
   min_displacement: 2
-  max_displacement_ratio: 0.1
   pyrlk:
     win_size: [21, 21]
     max_level: 3
@@ -43,11 +41,6 @@ tracking:
     term_criteria:
       max_iter: 30
       eps: 0.01
-  hungarian:
-    max_displacement: 60.0
-    top_points_ratio: 0.1
-    inward_penalty_threshold: -2.0
-    penalty_multiplier: 5.0
 
 slip_detection:
   slip_threshold: 0.8
@@ -59,19 +52,11 @@ slip_detection:
   moving_count_thresh: 2
 
 visualization:
-  arrow_scale: 2.0
+  arrow_scale: 3.0
   arrow_non_moving_color: [180, 180, 180]
-  arrow_moving_color: [0, 255, 0] # Will be updated dynamically by intensity
   arrow_thickness: 1
   arrow_tip_length: 0.3
   start_marker_color: [255, 255, 0]
-  hsv:
-    start_marker_color: [0, 0, 0]
-    start_marker_radius: 1
-    multiplier: 3
-    saturation_multiplier: 25
-    value: 255
-    hue_divisor: 2
   keypoint_color: [0, 255, 0]
   motion_magnitude_threshold: 0.3
   color_intensity_multiplier: 20
