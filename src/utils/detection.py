@@ -75,10 +75,16 @@ def create_blob_detector(config: BlobDetectorConfig | dict | None = None) -> cv2
 
 
 def detect_markers(
-    img_processed: np.ndarray, config: BlobDetectorConfig | dict | None = None
+    img_processed: np.ndarray,
+    config: BlobDetectorConfig | dict | None = None,
+    _detector: cv2.SimpleBlobDetector | None = None,
 ) -> tuple[np.ndarray, list[cv2.KeyPoint]]:
-    """Trả về tâm marker dạng mảng float Nx2 và danh sách keypoint OpenCV."""
-    detector = create_blob_detector(config=config)
+    """Trả về tâm marker dạng mảng float Nx2 và danh sách keypoint OpenCV.
+
+    Args:
+        _detector: detector được tạo sẵn để tái sử dụng (tránh tạo mới mỗi frame).
+    """
+    detector = _detector if _detector is not None else create_blob_detector(config=config)
     keypoints = detector.detect(img_processed)
     centers = np.array([[kp.pt[0], kp.pt[1]] for kp in keypoints], dtype=np.float32)
     return centers, keypoints

@@ -9,11 +9,11 @@ import cv2
 import numpy as np
 import numpy.typing as npt
 
-from src.utils.detection import detect_markers
+from src.utils.detection import detect_markers, create_blob_detector
 from src.utils.preprocessing import preprocess
 from src.hungarian.hungarian import match_markers_robust
 from src.pyr_lk.pyr_lk import track_markers_lk
-from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv
+from src.utils.visualization import visualize_flow_arrows, visualize_flow_hsv, build_hsv_interp_cache
 from src.utils.config_parser import load_config
 
 logger = logging.getLogger(__name__)
@@ -26,16 +26,26 @@ class RealtimeTactileTracking:
         self.config = config
         self.camera_id = self.config.get("camera", {}).get("device_id", 0)
         self.tracking_method = self.config.get("tracking", {}).get("method", "H")
-        
+
         # Load keyboard controls
         controls = self.config.get("controls", {})
         self.wait_key_time = controls.get("wait_key", 1)
         self.key_capture = ord(controls.get("key_capture", "r"))
         self.key_clear = ord(controls.get("key_clear", "c"))
         self.key_quit = ord(controls.get("key_quit", "q"))
-        
+
         self.reference_image: Optional[npt.NDArray] = None
         self.reference_markers: Optional[npt.NDArray] = None
+
+        # --- Cache các object tốn chi phí khởi tạo ---
+        pre_cfg = config.get("preprocessing", {})
+        self._clahe = cv2.createCLAHE(
+            clipLimit=pre_cfg.get("clahe_clip_limit", 2.5),
+            tileGridSize=tuple(pre_cfg.get("clahe_grid", [8, 8])),
+        )
+        self._blob_detector = create_blob_detector(config=config)
+        # Cache IDW weights cho HSV visualization — tính lại khi đổi reference.
+        self._hsv_cache: Optional[dict] = None
 
     def _wait_for_camera_warmup(self, capture: cv2.VideoCapture) -> None:
         """Bỏ qua vài frame đầu tiên để cảm biến camera tự điều chỉnh."""
@@ -49,12 +59,19 @@ class RealtimeTactileTracking:
             return True
         elif key == self.key_capture:
             self.reference_image = gray_frame.copy()
-            reference_proc = preprocess(self.reference_image, config=self.config)
-            self.reference_markers, _ = detect_markers(reference_proc, config=self.config)
+            reference_proc = preprocess(self.reference_image, config=self.config, _clahe=self._clahe)
+            self.reference_markers, _ = detect_markers(
+                reference_proc, config=self.config, _detector=self._blob_detector
+            )
+            # Pre-compute IDW weights một lần duy nhất cho toàn bộ session tracking.
+            self._hsv_cache = build_hsv_interp_cache(
+                self.reference_markers, gray_frame.shape, config=self.config
+            )
             logger.info(f"Đã chụp ảnh tham chiếu: Phát hiện {len(self.reference_markers)} markers.")
         elif key == self.key_clear:
             self.reference_image = None
             self.reference_markers = None
+            self._hsv_cache = None
             logger.info("Đã xóa ảnh tham chiếu.")
         return False
 
@@ -66,12 +83,14 @@ class RealtimeTactileTracking:
             return timings
 
         t_start = time.perf_counter()
-        
-        deformed_proc = preprocess(gray_frame, config=self.config)
+
+        deformed_proc = preprocess(gray_frame, config=self.config, _clahe=self._clahe)
         timings["preprocess"] = (time.perf_counter() - t_start) * 1000
 
         t_detect = time.perf_counter()
-        deformed_markers_naive, _ = detect_markers(deformed_proc, config=self.config)
+        deformed_markers_naive, _ = detect_markers(
+            deformed_proc, config=self.config, _detector=self._blob_detector
+        )
         timings["detect"] = (time.perf_counter() - t_detect) * 1000
         
         if len(self.reference_markers) == 0:
@@ -101,7 +120,8 @@ class RealtimeTactileTracking:
 
             vis_hsv = visualize_flow_hsv(
                 self.reference_markers, deformed_markers_tracked, valid,
-                self.reference_image.shape, config=self.config, save_path=None
+                self.reference_image.shape, config=self.config, save_path=None,
+                _interp_cache=self._hsv_cache,
             )
             cv2.imshow("Realtime Flow HSV", vis_hsv)
         timings["visualize"] = (time.perf_counter() - t_vis) * 1000
