@@ -38,7 +38,7 @@ detection:
   min_convexity: 0.7
 
 tracking:
-  min_displacement: 1.5
+  min_displacement: 1
   pyrlk:
     win_size: [21, 21]
     max_level: 3
