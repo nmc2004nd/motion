@@ -1,29 +1,32 @@
-"""Command Line Interface (CLI) entry point for the tactile marker tracking pipeline."""
+"""CLI entry point cho pipeline batch: `python -m src.main`."""
+
+from __future__ import annotations
 
 import argparse
 import logging
 
-from .pipeline import TactileMarkerTrackingPipeline
-from .utils.config_parser import load_config
+from .config import load_config
+from .config.loader import ConfigError
+from .pipelines.batch import TactileMarkerTrackingPipeline
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run tactile marker tracking pipeline")
-    parser.add_argument("--config-path", default="config/pipeline_config.yaml", help="Path to the configuration YAML file")
+    parser.add_argument(
+        "--config-path", default="config/pipeline_config.yaml",
+        help="Path to the configuration YAML file",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
-    """Main execution function."""
-    args = parse_args()
-    config_parser = load_config(args.config_path)
-    config = config_parser.config
-    
-    pipeline = TactileMarkerTrackingPipeline(config=config)
-    pipeline.run()
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    args = _parse_args()
+    try:
+        config = load_config(args.config_path)
+    except ConfigError as e:
+        raise SystemExit(f"[config] {e}")
+    TactileMarkerTrackingPipeline(config=config).run()
 
 
 if __name__ == "__main__":

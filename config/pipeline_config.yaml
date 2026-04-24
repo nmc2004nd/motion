@@ -1,9 +1,14 @@
+# Cấu hình tập trung cho pipeline theo dõi marker tactile + phát hiện trượt.
+# Mọi hằng số vận hành (đường dẫn, ngưỡng, màu sắc, vị trí text...) đều khai báo ở đây.
+# Code KHÔNG có fallback mặc định — thiếu key nào sẽ raise ConfigError ở `load_config`.
+
 paths:
   ref_image: "data/ref/my_photo_1.jpg"
   deformed_image: "data/img/my_photo_2.jpg"
   calib_file: "config/calib_result.npz"
   output_dir: "outputs"
   calib_dir: "./data/calib"
+  batch_output_subdir: "LK"
 
 camera:
   device_id: 0
@@ -33,7 +38,7 @@ detection:
   min_convexity: 0.7
 
 tracking:
-  min_displacement: 2
+  min_displacement: 1.5
   pyrlk:
     win_size: [21, 21]
     max_level: 3
@@ -44,12 +49,30 @@ tracking:
 
 slip_detection:
   slip_threshold: 0.8
-  min_motion_thresh: 1.0
+  min_motion_thresh: 2.0
   min_moving_markers: 5
   alpha: 0.3
+  alpha_decay: 0.6
   rebound_dot_prod_threshold: -0.1
+  press_rate_threshold: 0.5
   history_buffer_length: 5
   moving_count_thresh: 2
+
+slip_v2:
+  scales: [1, 3, 9]
+  min_valid_markers: 6
+  translation_norm: 2.0
+  translation_min: 0.10
+  short_gate_norm: 0.25
+  short_gate_softmin: 0.15
+  short_gate_max_scale: 3
+  coherence_min: 0.45
+  score_on: 0.55
+  score_off: 0.35
+  alpha_up: 0.5
+  alpha_down: 0.7
+  radial_rate_min: 0.004
+  press_slip_ratio: 0.35
 
 visualization:
   arrow_scale: 3.0
@@ -64,7 +87,10 @@ visualization:
   summary_dpi: 100
   text:
     status_pos: [10, 30]
+    fps_pos: [10, 60]
     slip_pos: [10, 70]
+    timing_start_y: 90
+    timing_step_y: 25
     scale_normal: 1.0
     scale_idle: 0.8
     thickness: 2
@@ -72,9 +98,50 @@ visualization:
     color_idle: [0, 0, 255]
     color_slip: [0, 0, 255]
     color_moving: [0, 255, 255]
+    color_timing: [255, 255, 0]
+  overlay_v2:
+    font_scale_main: 0.75
+    font_scale_detail: 0.55
+    font_scale_perf: 0.55
+    font_scale_idle: 0.8
+    font_scale_idle_fps: 0.7
+    main_pos: [10, 30]
+    detail_pos: [10, 60]
+    perf_pos: [10, 85]
+    idle_main_pos: [10, 30]
+    idle_fps_pos: [10, 60]
+    perf_color: [200, 200, 200]
+    idle_color: [0, 0, 255]
+    idle_fps_color: [0, 200, 255]
+    phase_colors:
+      slip: [0, 0, 255]
+      pressing: [255, 120, 0]
+      releasing: [255, 0, 255]
+      alert: [0, 255, 255]
+      tracking: [0, 255, 0]
+    hud_arrow:
+      offset_x_from_right: 80
+      offset_y_from_bottom: 80
+      scale: 20
+      center_radius: 4
+      center_color: [180, 180, 180]
+      min_magnitude: 0.05
+      thickness: 2
+      tip_length: 0.3
+    slip_bar:
+      margin_x: 10
+      margin_y_from_bottom: 30
+      width: 260
+      height: 14
+      bg_color: [60, 60, 60]
+      threshold_on_color: [255, 255, 255]
+      threshold_off_color: [128, 128, 128]
 
 controls:
   wait_key: 1
   key_capture: "r"
   key_clear: "c"
   key_quit: "q"
+
+pipeline:
+  use_calibration: false

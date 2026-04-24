@@ -38,9 +38,9 @@ python -m src.slip_prob.realtime_slip_pipeline --config-path config/pipeline_con
 
 ### Hiệu chỉnh camera
 ```python
-from src.utils.calibration import calibrate_camera
-from src.utils.config_parser import load_config
-config = load_config("config/pipeline_config.yaml").config
+from src.core.calibration import calibrate_camera
+from src.config import load_config
+config = load_config("config/pipeline_config.yaml")
 calibrate_camera(config=config)
 # Kết quả: config/calib_result.npz
 ```
@@ -64,10 +64,31 @@ Pipeline theo dõi 6 bước:
 Tiền xử lý → Phát hiện → Theo dõi → Trực quan hóa → Phân tích → Tổng hợp
 ```
 
-Mỗi bước được tách thành module độc lập trong `src/utils/`. Pipeline được điều phối bởi:
-- `TactileMarkerTrackingPipeline` (`src/pipeline.py`) — xử lý batch
-- `RealtimeTactileTracking` (`src/real_time/realtime_pipeline.py`) — thời gian thực
-- `RealtimeSlipTracking` (`src/slip_prob/realtime_slip_pipeline.py`) — thời gian thực với slip detection
+### Layout thư mục
+
+```
+src/
+├── config/       # load_config + schema validation (không fallback im lặng)
+├── core/         # thuật toán lõi: preprocessing, detection, tracking, calibration, visualization
+├── common/       # tiện ích realtime: camera, keyboard, overlay, perf
+├── slip/         # detector slip v1 (MRVL) + v2 (translation/radial decomp)
+├── pipelines/    # BaseRealtimePipeline + batch + 3 realtime pipelines
+├── real_time/    # shim giữ entry point cũ
+├── slip_prob/    # shim giữ entry point cũ
+├── slip_v2/      # shim giữ entry point cũ
+└── flow_raft/    # spike RAFT-Small (thử nghiệm)
+```
+
+Pipeline được điều phối bởi:
+- `TactileMarkerTrackingPipeline` (`src/pipelines/batch.py`) — xử lý batch
+- `RealtimeTactileTracking` (`src/pipelines/realtime_tracking.py`) — thời gian thực
+- `RealtimeSlipTracking` (`src/pipelines/realtime_slip_v1.py`) — realtime + slip v1
+- `RealtimeSlipV2Pipeline` (`src/pipelines/realtime_slip_v2.py`) — realtime + slip v2
+
+Cả 3 pipeline realtime đều kế thừa `BaseRealtimePipeline` (`src/pipelines/base.py`),
+chỉ override `process_frame()` và (tuỳ chọn) `draw_idle()` / `window_name` /
+`on_reference_captured()` / `on_reference_cleared()`. Vòng lặp camera + keyboard
++ lifecycle của reference do base xử lý.
 
 ## Luồng dữ liệu
 
@@ -93,17 +114,19 @@ webcam → grayscale → preprocess → detect
 
 ## Thuật toán theo dõi
 
-Hệ thống chỉ sử dụng **Pyramid Lucas-Kanade** (`src/pyr_lk/pyr_lk.py`):
+Hệ thống chỉ sử dụng **Pyramid Lucas-Kanade** (`src/core/tracking.py`):
 - Forward tracking → backward tracking → so sánh để loại điểm trôi (forward-backward check)
 - Ngưỡng FB error: 2.0 px
-- **Deadzone**: dịch chuyển < 2 px bị reset về vị trí tham chiếu (lọc nhiễu đàn hồi vật liệu)
+- **Deadzone**: dịch chuyển < `tracking.min_displacement` px bị reset về vị trí tham chiếu
+  (lọc nhiễu đàn hồi vật liệu). Bật/tắt qua flag `apply_deadzone` — slip V2 dùng `False`
+  để giữ tín hiệu slip chậm tích luỹ.
 - Tham số: `win_size=(21,21)`, `max_level=3` (pyramid depth), `fb_threshold=2.0`
 
 > Lưu ý: Thuật toán Hungarian (`src/hungarian/`) đã bị xóa khỏi codebase.
 
 ## Phát hiện trượt
 
-`SlipDetector` (`src/slip_prob/slip_prob.py`) dùng thống kê vòng tròn:
+`SlipDetector` (`src/slip/v1.py`) dùng thống kê vòng tròn:
 1. Lọc marker không hợp lệ và dịch chuyển < `min_motion_thresh` (1.0 px)
 2. **Rebound filtering**: loại marker đang hồi phục đàn hồi (dot product vận tốc · biến dạng < ngưỡng)
 3. Kiểm tra đủ số marker đang di chuyển (≥ `min_moving_markers = 5`)
@@ -118,15 +141,21 @@ Hệ thống chỉ sử dụng **Pyramid Lucas-Kanade** (`src/pyr_lk/pyr_lk.py`)
 
 ## Tối ưu hiệu năng thời gian thực
 
-Các đối tượng được tạo một lần và tái sử dụng qua các frame:
+Các đối tượng được tạo một lần và tái sử dụng qua các frame (do `BaseRealtimePipeline` quản lý):
 - `_clahe`: đối tượng CLAHE (tránh khởi tạo lại mỗi frame)
 - `_blob_detector`: SimpleBlobDetector
 
 ## Cấu hình
 
-Tất cả tham số trong `config/pipeline_config.yaml`. Dùng `ConfigParser` (`src/utils/config_parser.py`) để truy cập bằng dot-notation (ví dụ: `"tracking.pyrlk.win_size"`).
+Tất cả tham số trong `config/pipeline_config.yaml`. Dùng `load_config("...")` từ
+`src.config` — hàm validate toàn bộ required keys ngay khi load và raise
+`ConfigError` với danh sách key thiếu. **Code không có fallback mặc định**: các
+hàm xử lý dùng `require(config, "dot.path")` — thiếu key là lỗi cấu hình, không
+âm thầm chạy với giá trị lạ. Thêm key mới nhớ khai báo ở `src/config/schema.py`.
 
-Các nhóm cấu hình chính: `paths`, `tracking`, `preprocessing`, `detection`, `slip_detection`, `visualization`, `camera`, `calibration`, `controls`.
+Các nhóm cấu hình chính: `paths`, `tracking`, `preprocessing`, `detection`,
+`slip_detection`, `slip_v2`, `visualization` (có `text` + `overlay_v2`),
+`camera`, `calibration`, `controls`, `pipeline`.
 
 Tham số quan trọng:
 
@@ -147,14 +176,14 @@ Tham số quan trọng:
 | | `alpha` | 0.3 | Hệ số EMA |
 | | `history_buffer_length` | 5 | Số frame lưu lịch sử |
 
-## Tiền xử lý ảnh (`src/utils/preprocessing.py`)
+## Tiền xử lý ảnh (`src/core/preprocessing.py`)
 
 1. **Ước lượng nền**: `cv2.blur` với kernel 101×101 (loại vignetting LED)
 2. **Trừ nền**: `cv2.subtract(img, background)` → marker nổi rõ trên nền đồng đều
 3. **Chuẩn hóa**: stretch về [0, 255]
 4. **CLAHE**: tăng cường độ tương phản cục bộ (`clip_limit=2.5`, `grid=(8,8)`)
 
-## Trực quan hóa (`src/utils/visualization.py`)
+## Trực quan hóa (`src/core/visualization.py`)
 
 **Arrows** (`visualize_flow_arrows`):
 - Mũi tên từ vị trí tham chiếu → vị trí biến dạng, scale 3×

@@ -1,0 +1,45 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Profiling
+profile_result.prof
+*.prof
+
+# Outputs (generated — không commit kết quả chạy)
+outputs/
+
+# Calibration file (sinh ra lúc chạy, không cần track)
+config/calib_result.npz
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
