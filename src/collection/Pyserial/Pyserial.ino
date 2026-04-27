@@ -1,104 +1,83 @@
 #include <AccelStepper.h>
 
 #define STEP_PIN 3
-#define DIR_PIN 4
+#define DIR_PIN  4
 
 AccelStepper stepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
 
-// Cấu hình quy đổi ra mm
-float microStep = 16.0;                                                      // Vi bước (vd: 16)
-float angleStep = 1.8;                                                       // Góc bước motor (thường 1.8 độ)
-float distancePerRound = 8.0;                                                // Hành trình 1 vòng (bước vitme, vd 8mm)
-float stepsPerDistance = microStep * (360.0 / angleStep) / distancePerRound; // VD: 3200/8 = 400
+const float MICRO_STEP    = 16.0;
+const float ANGLE_STEP    = 1.8;
+const float MM_PER_REV    = 8.0;
+const float STEPS_PER_MM  = MICRO_STEP * (360.0 / ANGLE_STEP) / MM_PER_REV;
 
-const byte numChars = 32;
-char receivedChars[numChars];
-boolean newData = false;
+const byte BUFFER_SIZE = 32;
+char rxBuf[BUFFER_SIZE];
+bool newData = false;
 
 void setup()
 {
   Serial.begin(115200);
-
-  stepper.setMaxSpeed(3200);     // tốc độ tối đa
-  stepper.setAcceleration(1000); // gia tốc (càng cao càng "bốc")
+  stepper.setMaxSpeed(3200);
+  stepper.setAcceleration(1000);
 }
 
 void loop()
 {
-  // LUÔN PHẢI GỌI HÀM NÀY ĐỂ MOTOR CHẠY (Non-blocking)
   stepper.run();
-
-  // Đọc dữ liệu từ Python
-  recvWithEndMarker();
-  // Xử lý lệnh nếu có dữ liệu mới
-  parseData();
-}
-
-void recvWithEndMarker()
-{
-  static byte ndx = 0;
-  char endMarker = '\n';
-  char rc;
-
-  // Chỉ đọc khi có dữ liệu và chưa có dữ liệu mới chưa xử lý
-  while (Serial.available() > 0 && newData == false)
-  {
-    rc = Serial.read();
-
-    if (rc != endMarker)
-    {
-      receivedChars[ndx] = rc;
-      ndx++;
-      if (ndx >= numChars)
-      {
-        ndx = numChars - 1;
-      }
-    }
-    else
-    {
-      receivedChars[ndx] = '\0'; // Kết thúc chuỗi
-      ndx = 0;
-      newData = true;
-    }
-  }
-}
-
-void parseData()
-{
-  if (newData == true)
-  {
-    char cmd = receivedChars[0];
-    float distance = 0.0;
-    long steps = 0;
-
-    // Ví dụ lệnh: "f 150" (150 mm)
-    if (strlen(receivedChars) > 1)
-    {
-      distance = atof(&receivedChars[2]);         // Lấy giá trị khoảng cách (float)
-      steps = round(distance * stepsPerDistance); // Tính số bước dựa trên công thức
-    }
-
-    if (cmd == 'f')
-    {
-      stepper.move(steps);
-      Serial.print("M: Forward ");
-      Serial.print(distance);
-      Serial.println(" mm");
-    }
-    else if (cmd == 'b')
-    {
-      stepper.move(-steps);
-      Serial.print("M: Backward ");
-      Serial.print(distance);
-      Serial.println(" mm");
-    }
-    else if (cmd == 's')
-    {
-      stepper.stop(); // Dừng mềm
-      Serial.println("M: Stopped!");
-    }
-
-    // Đánh dấu đã xử lý xong
+  recvLine();
+  if (newData) {
+    parseCmd();
     newData = false;
   }
+}
+
+void recvLine()
+{
+  static byte idx = 0;
+  while (Serial.available() > 0 && !newData) {
+    char c = Serial.read();
+    if (c == '\n') {
+      rxBuf[idx] = '\0';
+      idx = 0;
+      newData = true;
+    } else if (idx < BUFFER_SIZE - 1) {
+      rxBuf[idx++] = c;
+    }
+  }
+}
+
+void parseCmd()
+{
+  char cmd = rxBuf[0];
+
+  if (cmd == 's') {
+    stepper.stop();
+    Serial.println("M: Stopped");
+    return;
+  }
+
+  if ((cmd == 'f' || cmd == 'b') && rxBuf[1] == ' ') {
+    char *endPtr;
+    float distance = strtof(&rxBuf[2], &endPtr);
+
+    // strtof trả về con trỏ bằng start nếu không parse được
+    if (endPtr == &rxBuf[2] || distance <= 0.0f) {
+      Serial.println("ERR: invalid distance");
+      return;
+    }
+
+    long steps = (long)round(distance * STEPS_PER_MM);
+    if (cmd == 'f') {
+      stepper.move(steps);
+      Serial.print("M: Forward ");
+    } else {
+      stepper.move(-steps);
+      Serial.print("M: Backward ");
+    }
+    Serial.print(distance);
+    Serial.println(" mm");
+    return;
+  }
+
+  Serial.println("ERR: unknown cmd");
 }
