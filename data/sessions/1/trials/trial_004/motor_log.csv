@@ -1,0 +1,71 @@
+ts_mono,direction,payload
+6455.877653,cmd,b 0.5
+6455.883671,resp,M: Backward 0.50 mm
+6458.092532,cmd,b 0.5
+6458.098336,resp,M: Backward 0.50 mm
+6460.178330,cmd,b 0.5
+6460.184587,resp,M: Backward 0.50 mm
+6462.315650,cmd,b 0.5
+6462.321246,resp,M: Backward 0.50 mm
+6464.526524,cmd,b 0.5
+6464.532345,resp,M: Backward 0.50 mm
+6466.211508,cmd,b 0.5
+6466.217203,resp,M: Backward 0.50 mm
+6468.313816,cmd,b 0.5
+6468.319943,resp,M: Backward 0.50 mm
+6470.191560,cmd,b 0.5
+6470.197556,resp,M: Backward 0.50 mm
+6471.804249,cmd,b 0.5
+6471.810392,resp,M: Backward 0.50 mm
+6473.657433,cmd,b 0.5
+6473.663346,resp,M: Backward 0.50 mm
+6475.250504,cmd,b 0.5
+6475.256661,resp,M: Backward 0.50 mm
+6477.036619,cmd,b 0.5
+6477.039698,resp,M: Backward 0.50 mm
+6478.365093,cmd,b 0.5
+6478.370771,resp,M: Backward 0.50 mm
+6479.683475,cmd,b 0.5
+6479.689242,resp,M: Backward 0.50 mm
+6481.351979,cmd,b 0.5
+6481.357869,resp,M: Backward 0.50 mm
+6482.888520,cmd,b 0.5
+6482.894078,resp,M: Backward 0.50 mm
+6484.488576,cmd,b 0.5
+6484.494029,resp,M: Backward 0.50 mm
+6486.411275,cmd,b 0.5
+6486.415222,resp,M: Backward 0.50 mm
+6489.049516,cmd,f 0.5
+6489.055343,resp,M: Forward 0.50 mm
+6490.663759,cmd,f 0.5
+6490.669589,resp,M: Forward 0.50 mm
+6492.033323,cmd,f 0.5
+6492.039526,resp,M: Forward 0.50 mm
+6493.423554,cmd,f 0.5
+6493.426342,resp,M: Forward 0.50 mm
+6495.013624,cmd,f 0.5
+6495.020114,resp,M: Forward 0.50 mm
+6496.277336,cmd,f 0.5
+6496.283306,resp,M: Forward 0.50 mm
+6497.791897,cmd,f 0.5
+6497.798280,resp,M: Forward 0.50 mm
+6499.135665,cmd,f 0.5
+6499.141410,resp,M: Forward 0.50 mm
+6500.775684,cmd,f 0.5
+6500.781437,resp,M: Forward 0.50 mm
+6502.198328,cmd,f 0.5
+6502.204375,resp,M: Forward 0.50 mm
+6503.844216,cmd,f 0.5
+6503.866034,resp,M: Forward 0.50 mm
+6505.371163,cmd,f 0.5
+6505.390139,resp,M: Forward 0.50 mm
+6506.892471,cmd,f 0.5
+6506.895132,resp,M: Forward 0.50 mm
+6508.427757,cmd,f 0.5
+6508.433484,resp,M: Forward 0.50 mm
+6509.877584,cmd,f 0.5
+6509.883986,resp,M: Forward 0.50 mm
+6511.430705,cmd,f 0.5
+6511.436330,resp,M: Forward 0.50 mm
+6513.570372,cmd,f 0.5
+6513.573296,resp,M: Forward 0.50 mm

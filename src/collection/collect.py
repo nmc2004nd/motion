@@ -1,21 +1,32 @@
+import re
 import sys
 import time
 
 import serial
 
-PORT = '/dev/ttyACM0'
+PORT = '/dev/ttyACM1'
 BAUD = 19200
+
+_IMADA_NUM_RE = re.compile(r"[-+]?\d*\.?\d+")
 
 
 def parse_imada(raw: str) -> float | None:
-    """Parse phản hồi Imada ZTA, ví dụ 'r+0.469 N' → 0.469."""
+    """Parse phản hồi Imada ZTA → float Newton.
+
+    Format gặp thực tế: ``-0.001NTO``, ``+0.469N``, ``r+0.469 N``. Unit/status
+    code dính liền giá trị nên dùng regex bắt số ở đầu thay vì split.
+    """
     raw = raw.strip()
     if not raw:
         return None
-    token = raw[1:] if raw[0] in ('r', 'R') else raw
+    if raw[0] in ('r', 'R'):
+        raw = raw[1:]
+    m = _IMADA_NUM_RE.match(raw)
+    if m is None:
+        return None
     try:
-        return float(token.split()[0])
-    except (ValueError, IndexError):
+        return float(m.group(0))
+    except ValueError:
         return None
 
 

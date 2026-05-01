@@ -1,0 +1,49 @@
+# Cấu hình end-to-end CNN force regressor.
+# Tách riêng khỏi config/pipeline_config.yaml và src/force_model/config.yaml.
+
+data:
+  sessions_root: "data/sessions"
+  # Tolerance (s) khi nearest-neighbor join force vào frame timestamp.
+  force_sync_tolerance_s: 0.1
+  # H, W sau resize. Bump lên [480, 640] nếu muốn full-res trên GPU mạnh.
+  image_size: [240, 320]
+  split:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  split_seed: 42
+
+model:
+  # "resnet18" (default, ~11M params, dùng cho 5060 Ti) | "small_cnn" (~110K, debug laptop)
+  backbone: "resnet18"
+  # ImageNet pretrain: chỉ áp dụng được với resnet18; conv1 sẽ inflate từ 3→2 chan
+  # bằng cách lấy mean qua RGB rồi tile.
+  pretrained: true
+  hidden_head: 128
+  dropout: 0.2
+
+train:
+  batch_size: 32
+  num_epochs: 60
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  huber_delta: 1.0
+  early_stop_patience: 10
+  scheduler: "cosine"        # "cosine" | "none"
+  num_workers: 4
+  device: "auto"
+  checkpoint_dir: "outputs/force_cnn/checkpoints"
+  log_dir: "outputs/force_cnn/logs"
+
+augment:
+  enabled: true
+  flip_h_prob: 0.5
+  flip_v_prob: 0.5
+  rotation_max_deg: 5.0
+  # Cùng áp cho ref + frame để mô phỏng exposure drift, không phá quan hệ deformation.
+  brightness_jitter: 0.1
+  contrast_jitter: 0.1
+
+infer:
+  # Reference mặc định khi chạy infer.py không có --ref.
+  default_ref: "data/ref/my_photo_1.jpg"

@@ -1,0 +1,29 @@
+# Cấu hình polynomial force regressor.
+# Reuse cache .npz từ src/force_model/prepare.py.
+
+data:
+  cache_dir: "data/cache/force_model"
+  split:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  split_seed: 42
+
+model:
+  feature_set: "v1"      # preset trong features.py
+  degree: 2              # bậc đa thức (2=55 params, 3=220 params)
+  head: "linear"         # "linear" (poly regression thuần) | "mlp_small"
+  hidden_head: 16
+  dropout: 0.0
+
+train:
+  batch_size: 64
+  num_epochs: 300
+  lr: 5.0e-3
+  weight_decay: 1.0e-2   # L2 regularize hệ số poly bậc cao
+  huber_delta: 1.0
+  early_stop_patience: 40
+  num_workers: 0          # dataset load full vào RAM → không cần worker
+  device: "auto"
+  checkpoint_dir: "outputs/force_poly/checkpoints"
+  log_dir: "outputs/force_poly/logs"

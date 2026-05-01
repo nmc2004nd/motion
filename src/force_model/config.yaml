@@ -1,0 +1,42 @@
+# Cấu hình training force regression model.
+# Tách riêng khỏi config/pipeline_config.yaml để không phụ thuộc strict schema.
+
+data:
+  # Cache .npz được tạo bởi prepare.py
+  cache_dir: "data/cache/force_model"
+  # Tolerance (s) khi nearest-neighbor join force vào frame timestamp.
+  # Frame nào không có force trong cửa sổ này sẽ bị skip.
+  force_sync_tolerance_s: 0.1
+  # Tỉ lệ split theo trial (sum = 1.0)
+  split:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  # Seed cho permutation trial khi split
+  split_seed: 42
+
+model:
+  # N_max sẽ tự ăn từ max(num_markers across trials) trong cache.
+  hidden_per_point: [64, 128]   # Shared MLP per point
+  hidden_head: 64
+  dropout: 0.1
+
+train:
+  batch_size: 64
+  num_epochs: 50
+  lr: 1.0e-3
+  weight_decay: 1.0e-4
+  huber_delta: 1.0          # Huber loss delta (N)
+  early_stop_patience: 10   # Stop nếu val MAE không cải thiện sau N epoch
+  num_workers: 2
+  device: "auto"             # "auto" → cuda nếu có, else cpu
+  checkpoint_dir: "outputs/force_model/checkpoints"
+  log_dir: "outputs/force_model/logs"
+
+augment:
+  # Đặt enabled=false để debug deterministic
+  enabled: true
+  flip_h_prob: 0.5
+  flip_v_prob: 0.5
+  rotation_max_deg: 5.0
+  noise_std_px: 0.5

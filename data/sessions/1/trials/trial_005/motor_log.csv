@@ -1,0 +1,29 @@
+ts_mono,direction,payload
+6534.395760,cmd,b 2.5
+6534.415236,resp,M: Backward 2.50 mm
+6537.109093,cmd,b 2.5
+6537.115204,resp,M: Backward 2.50 mm
+6540.757369,cmd,b 2.5
+6540.762911,resp,M: Backward 2.50 mm
+6544.663067,cmd,b 2.5
+6544.668609,resp,M: Backward 2.50 mm
+6552.256485,cmd,b 1.0
+6552.260686,resp,M: Backward 1.00 mm
+6554.881671,cmd,f 1.0
+6554.884471,resp,M: Forward 1.00 mm
+6557.902177,cmd,f 1.0
+6557.923797,resp,M: Forward 1.00 mm
+6560.400554,cmd,f 1.0
+6560.403314,resp,M: Forward 1.00 mm
+6562.351229,cmd,f 1.0
+6562.357288,resp,M: Forward 1.00 mm
+6564.732597,cmd,f 1.0
+6564.738287,resp,M: Forward 1.00 mm
+6566.884313,cmd,f 1.0
+6566.886865,resp,M: Forward 1.00 mm
+6569.188732,cmd,f 1.0
+6569.207109,resp,M: Forward 1.00 mm
+6571.378136,cmd,f 1.0
+6571.384243,resp,M: Forward 1.00 mm
+6575.659548,cmd,f 1.0
+6575.666322,resp,M: Forward 1.00 mm

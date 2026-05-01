@@ -1,0 +1,28 @@
+session_id: '1'
+created_at: '2026-04-30T18:16:29'
+hardware:
+  arduino_port: /dev/ttyACM0
+  imada_port: /dev/ttyACM1
+  arduino_connected: true
+  imada_connected: true
+  firmware_sha256: 5fb0f07848bcd846fe46d6826d7be814e588083ee6d50062e5046ff6bf4668a5
+camera:
+  id: 2
+  width: 640
+  height: 480
+  exposure: -1.0
+  gain: -1.0
+  auto_exposure: -1.0
+  auto_wb: -1.0
+  fps: 30.0
+force:
+  zero_offset_n: 0.0
+notes: ''
+repro:
+  git_sha: ea102054f19634d5fb4ca80ab4a8675c479a0774
+  pip_versions:
+    opencv-python: 4.13.0
+    numpy: 2.4.4
+    pyserial: '3.5'
+    customtkinter: 5.2.2
+    pyyaml: 6.0.3

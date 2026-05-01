@@ -11,7 +11,7 @@ paths:
   batch_output_subdir: "LK"
 
 camera:
-  device_id: 0
+  device_id: 2
   warmup_frames: 15
 
 calibration:

@@ -1,0 +1,11 @@
+trial_id: trial_005
+start_ts_wall: 1777548091.844714
+start_ts_mono: 6532.810295862
+end_ts_mono: 6577.329741129
+duration_s: 44.5194
+n_frames: 397
+n_force_samples: 629
+n_motor_events: 28
+n_dropped: 0
+motor_state_at_start: moving
+tags: []

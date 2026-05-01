@@ -76,7 +76,8 @@ src/
 ├── real_time/    # shim giữ entry point cũ
 ├── slip_prob/    # shim giữ entry point cũ
 ├── slip_v2/      # shim giữ entry point cũ
-└── flow_raft/    # spike RAFT-Small (thử nghiệm)
+├── flow_raft/    # spike RAFT-Small (thử nghiệm)
+└── collection/   # thu thập dữ liệu thực nghiệm (camera + force gauge + motor)
 ```
 
 Pipeline được điều phối bởi:
@@ -189,10 +190,73 @@ Tham số quan trọng:
 - Mũi tên từ vị trí tham chiếu → vị trí biến dạng, scale 3×
 - Xám: marker không di chuyển; vàng: vị trí gốc; đỏ–vàng: mũi tên (độ sáng ∝ độ lớn dịch chuyển)
 
+## Thu thập dữ liệu (`src/collection/`)
+
+Module thu thập dữ liệu thực nghiệm đồng bộ: ảnh camera + lực từ force gauge Imada ZTA + điều khiển motor tuyến tính qua Arduino.
+
+### Các file
+
+| File | Vai trò |
+|---|---|
+| `realtime_station.py` | GUI tích hợp: camera + Imada + motor, ghi dữ liệu đồng bộ |
+| `control.py` | GUI điều khiển motor độc lập (standalone) |
+| `collect.py` | Script đọc force gauge Imada đơn giản, không GUI |
+| `Pyserial/Pyserial.ino` | Firmware Arduino điều khiển stepper motor |
+
+### Chạy station tích hợp
+
+```bash
+python -u src/collection/realtime_station.py
+```
+
+### Phần cứng
+
+| Thiết bị | Port mặc định | Baud |
+|---|---|---|
+| Arduino (stepper) | `/dev/ttyACM0` | 115200 |
+| Imada ZTA (force gauge) | `/dev/ttyACM1` | 19200 |
+| Camera | ID `0` | — |
+
+Thay đổi port trong các hằng số đầu file nếu cần.
+
+### Thiết kế đồng bộ dữ liệu
+
+```
+Imada thread  → cập nhật _latest_force dưới _lock (20 Hz)
+Camera thread → acquire _lock → snapshot (frame, force) cùng lúc → SyncSnapshot → write_queue
+Writer thread → wait(recording_event) → dequeue → ghi ảnh + CSV
+```
+
+`SyncSnapshot` đảm bảo mỗi bản ghi CSV có `(timestamp, image_name, force)` với frame và lực được lấy tại cùng một thời điểm. Writer thread block hoàn toàn khi không recording — không busy-loop.
+
+### Output
+
+```
+data/images/frame_<epoch>.jpg   # ảnh camera
+data/record.csv                 # timestamp, image_name, force (N)
+```
+
+### Giao thức lệnh Arduino
+
+```
+f <mm>   → tiến (ví dụ: "f 150")
+b <mm>   → lùi
+s        → dừng mềm (deceleration)
+```
+Arduino phản hồi `"M: Forward X mm"` / `"ERR: invalid distance"` / `"ERR: unknown cmd"`.
+
+### Cài đặt thêm
+
+```bash
+pip install pyserial customtkinter pillow
+```
+
 ## Dữ liệu
 
 ```
-data/ref/    # Ảnh tham chiếu (trạng thái tĩnh)
-data/img/    # Ảnh biến dạng (trạng thái tiếp xúc)
-data/calib/  # Ảnh hiệu chỉnh (checkerboard)
+data/ref/       # Ảnh tham chiếu (trạng thái tĩnh)
+data/img/       # Ảnh biến dạng (trạng thái tiếp xúc)
+data/calib/     # Ảnh hiệu chỉnh (checkerboard)
+data/images/    # Ảnh thu thập từ collection station
+data/record.csv # Log lực + ảnh từ collection station
 ```
