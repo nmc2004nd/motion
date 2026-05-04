@@ -2,9 +2,9 @@
 per-trial breakdown.
 
 Usage:
-    python -m src.force_model.eval [--config src/force_model/config.yaml]
-                                    [--split test]
-                                    [--out outputs/force_model/eval]
+    python -m src.force_model.eval --config src/force_model/config.yaml
+                                    --split test
+                                    --out outputs/force_model/eval
 """
 
 from __future__ import annotations
