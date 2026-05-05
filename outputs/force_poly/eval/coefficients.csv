@@ -1,0 +1,56 @@
+term,weight
+disp_mag_max,1.0944019556045532
+1,0.7173901200294495
+disp_mag_std,0.4964783191680908
+dx_mean,-0.36997920274734497
+radial_disp_mean,-0.2351192682981491
+disp_mag_mean * disp_mag_std,0.14828220009803772
+disp_mag_mean,-0.141195148229599
+disp_mag_mean * dy_mean,0.1300087571144104
+disp_mag_mean * tangential_disp_mean,0.11990512162446976
+disp_mag_std * radial_disp_mean,0.11953841894865036
+disp_mag_max * tangential_disp_mean,0.1044001579284668
+radial_disp_mean^2,-0.1041443794965744
+disp_mag_sum_norm,-0.10206673294305801
+disp_mag_std * valid_ratio,0.09877955168485641
+disp_mag_std * dx_mean,-0.09657788276672363
+disp_mag_std * disp_mag_sum_norm,0.09364165365695953
+disp_mag_sum_norm * tangential_disp_mean,-0.0923319086432457
+disp_mag_max^2,0.09130038321018219
+disp_mag_max * dy_mean,0.09084612876176834
+dy_mean^2,-0.08852031081914902
+disp_mag_sum_norm^2,-0.08323874324560165
+dy_mean,0.08194312453269958
+dy_mean * disp_mag_sum_norm,-0.0786476880311966
+dy_mean * radial_disp_mean,-0.07697997242212296
+disp_mag_max * disp_mag_std,0.07405547052621841
+dx_mean * tangential_disp_mean,-0.07334265857934952
+disp_mag_std * dy_mean,0.06825286895036697
+tangential_disp_mean,0.06669537723064423
+dx_mean^2,-0.06545846164226532
+dx_mean * valid_ratio,-0.05934621021151543
+dx_mean * disp_mag_sum_norm,-0.057598307728767395
+disp_mag_mean * dx_mean,0.05743253603577614
+radial_disp_mean * tangential_disp_mean,-0.056037187576293945
+disp_mag_mean * disp_mag_max,-0.05481259897351265
+disp_mag_sum_norm * radial_disp_mean,0.054143741726875305
+disp_mag_max * dx_mean,0.04692285135388374
+disp_mag_sum_norm * valid_ratio,-0.04524552822113037
+tangential_disp_mean^2,0.04231167212128639
+radial_disp_mean * valid_ratio,0.035312093794345856
+dx_mean * dy_mean,0.033643271774053574
+disp_mag_mean * disp_mag_sum_norm,-0.033264122903347015
+tangential_disp_mean * valid_ratio,-0.03251338750123978
+valid_ratio,-0.03235011175274849
+dy_mean * valid_ratio,-0.031221948564052582
+disp_mag_mean * radial_disp_mean,-0.027804385870695114
+dx_mean * radial_disp_mean,-0.027049830183386803
+valid_ratio^2,-0.025896107777953148
+disp_mag_max * radial_disp_mean,0.02286478690803051
+disp_mag_max * valid_ratio,0.019741447642445564
+disp_mag_std^2,-0.016030725091695786
+disp_mag_mean^2,0.012472197413444519
+disp_mag_mean * valid_ratio,0.012053420767188072
+dy_mean * tangential_disp_mean,-0.01010051742196083
+disp_mag_max * disp_mag_sum_norm,0.004036467522382736
+disp_mag_std * tangential_disp_mean,-0.0012273825705051422

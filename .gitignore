@@ -22,7 +22,7 @@ profile_result.prof
 *.prof
 
 # Outputs (generated — không commit kết quả chạy)
-outputs/
+# outputs/
 
 # Calibration file (sinh ra lúc chạy, không cần track)
 config/calib_result.npz
