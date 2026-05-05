@@ -135,6 +135,10 @@ class DataCollectionStation:
         # Motor state tracker (cập nhật từ Arduino response)
         self._motor_state = "unknown"  # idle | moving | unknown
 
+        # Toast notification state
+        self._toast_widget = None
+        self._toast_after_id = None
+
         self._init_hardware()
         self._init_gui()
         self._start_threads()
@@ -234,6 +238,46 @@ class DataCollectionStation:
         )
         self.btn_capture_ref.pack(side="left", padx=4)
 
+        # === Session / Trial info bar =====================================
+        info_bar = ctk.CTkFrame(self.app, fg_color=("#e9ecef", "#2b2d30"), height=28)
+        info_bar.pack(side="top", fill="x", padx=10, pady=(0, 3))
+        info_bar.pack_propagate(False)
+
+        self.lbl_sessions_count = ctk.CTkLabel(
+            info_bar, text="Sessions: —",
+            font=ctk.CTkFont(size=12), text_color="#adb5bd", anchor="w",
+        )
+        self.lbl_sessions_count.pack(side="left", padx=(14, 0))
+
+        ctk.CTkLabel(info_bar, text="|", font=ctk.CTkFont(size=12),
+                     text_color="#495057").pack(side="left", padx=6)
+
+        self.lbl_current_session = ctk.CTkLabel(
+            info_bar, text="Session: —",
+            font=ctk.CTkFont(size=12), text_color="#adb5bd", anchor="w",
+        )
+        self.lbl_current_session.pack(side="left", padx=(0, 0))
+
+        ctk.CTkLabel(info_bar, text="|", font=ctk.CTkFont(size=12),
+                     text_color="#495057").pack(side="left", padx=6)
+
+        self.lbl_trials_count = ctk.CTkLabel(
+            info_bar, text="Trials: —",
+            font=ctk.CTkFont(size=12), text_color="#adb5bd", anchor="w",
+        )
+        self.lbl_trials_count.pack(side="left", padx=(0, 0))
+
+        ctk.CTkLabel(info_bar, text="|", font=ctk.CTkFont(size=12),
+                     text_color="#495057").pack(side="left", padx=6)
+
+        self.lbl_current_trial = ctk.CTkLabel(
+            info_bar, text="Trial: —",
+            font=ctk.CTkFont(size=12), text_color="#adb5bd", anchor="w",
+        )
+        self.lbl_current_trial.pack(side="left", padx=(0, 0))
+
+        self._refresh_session_info()
+
         # === Main body ===================================================
         body = ctk.CTkFrame(self.app, fg_color="transparent")
         body.pack(side="top", fill="both", expand=True, padx=10, pady=5)
@@ -277,7 +321,7 @@ class DataCollectionStation:
         ctk.CTkLabel(right, text="MOTOR CONTROL",
                      font=ctk.CTkFont(weight="bold", size=16)).pack(pady=10)
 
-        self.distance_var = ctk.StringVar(value="150")
+        self.distance_var = ctk.StringVar(value="1")
         inp = ctk.CTkFrame(right, fg_color="transparent")
         inp.pack(pady=10)
         ctk.CTkLabel(inp, text="Distance (mm):").grid(row=0, column=0, padx=5)
@@ -361,6 +405,8 @@ class DataCollectionStation:
 
         self.btn_capture_ref.configure(state="normal")
         self.btn_record.configure(state="normal")
+        self._refresh_session_info()
+        self._show_toast(f"Session '{sid}' đã tạo thành công")
         self._set_status(f"Session active: {sid} (force zero={force_zero:.4f}N)")
 
     def _sample_force_zero(self, n: int = 20) -> float:
@@ -388,6 +434,7 @@ class DataCollectionStation:
         ts = time.monotonic()
         path = self._session.reference_dir() / f"ref_{ts:.6f}.jpg"
         cv2.imwrite(str(path), frame, IMWRITE_PARAMS)
+        self._show_toast(f"Reference đã lưu: {path.name}", color="#6610f2")
         self._set_status(f"Reference saved: {path.name}")
 
     # ------------------------------------------------------------------ #
@@ -439,6 +486,8 @@ class DataCollectionStation:
         self.btn_record.configure(
             text="⏹ STOP RECORDING", fg_color="#6c757d", hover_color="#5a6268",
         )
+        self._refresh_session_info()
+        self._show_toast(f"Bắt đầu ghi: {trial.trial_id}", color="#0d6efd")
         self._set_status(f"Recording {trial.trial_id} (tags={trial.tags})…")
 
     def _stop_recording(self):
@@ -476,6 +525,7 @@ class DataCollectionStation:
         self.btn_record.configure(
             text="🔴 START RECORDING", fg_color="#dc3545", hover_color="#c82333",
         )
+        self._refresh_session_info()
 
     def _drain_queues(self):
         for q in (self._frame_queue, self._force_queue, self._motor_queue):
@@ -724,6 +774,79 @@ class DataCollectionStation:
                     )
 
         self.app.after(50, self._update_ui)
+
+    def _refresh_session_info(self):
+        """Cập nhật info bar: tổng session, session hiện tại, số trial, trial đang active."""
+        root = dataset.data_root()
+        if root.exists():
+            n_sessions = sum(
+                1 for p in root.iterdir()
+                if p.is_dir() and (p / "session.yaml").exists()
+            )
+        else:
+            n_sessions = 0
+        self.lbl_sessions_count.configure(text=f"Sessions: {n_sessions}")
+
+        if self._session is None:
+            self.lbl_current_session.configure(text="Session: —", text_color="#adb5bd")
+            self.lbl_trials_count.configure(text="Trials: —", text_color="#adb5bd")
+            self.lbl_current_trial.configure(text="Trial: —", text_color="#adb5bd")
+            return
+
+        self.lbl_current_session.configure(
+            text=f"Session: {self._session.session_id}", text_color="#17a2b8",
+        )
+
+        trials_dir = self._session.trials_dir()
+        n_trials = (
+            sum(1 for p in trials_dir.iterdir() if p.is_dir())
+            if trials_dir.exists() else 0
+        )
+        self.lbl_trials_count.configure(
+            text=f"Trials: {n_trials}", text_color="#adb5bd",
+        )
+
+        with self._trial_lock:
+            trial = self._trial
+        if trial is not None:
+            self.lbl_current_trial.configure(
+                text=f"Trial: {trial.trial_id} ●", text_color="#dc3545",
+            )
+        else:
+            next_id = dataset.next_trial_id(self._session)
+            self.lbl_current_trial.configure(
+                text=f"Trial: — (next: {next_id})", text_color="#adb5bd",
+            )
+
+    def _show_toast(self, msg: str, *, color: str = "#28a745"):
+        """Hiện toast thành công ở trên cùng cửa sổ, tự ẩn sau 2.5s."""
+        if self._toast_widget is not None:
+            try:
+                self._toast_widget.destroy()
+            except Exception:
+                pass
+        if self._toast_after_id is not None:
+            self.app.after_cancel(self._toast_after_id)
+
+        toast = ctk.CTkFrame(self.app, fg_color=color, corner_radius=8)
+        ctk.CTkLabel(
+            toast,
+            text=f"✓  {msg}",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="white",
+        ).pack(padx=18, pady=8)
+        toast.place(relx=0.5, rely=0.0, anchor="n", y=10)
+        self._toast_widget = toast
+
+        def _dismiss():
+            try:
+                toast.destroy()
+            except Exception:
+                pass
+            self._toast_widget = None
+            self._toast_after_id = None
+
+        self._toast_after_id = self.app.after(2500, _dismiss)
 
     def _set_status(self, msg: str, *, error: bool = False):
         prefix = "ERROR: " if error else ""

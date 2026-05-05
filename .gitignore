@@ -43,3 +43,9 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Ignore custom files
+cache/
+CLAUDE.md
+/data
+/.claude

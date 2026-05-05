@@ -1,7 +1,7 @@
 """Training loop: trial-level split, Huber loss, Adam, early stop, save best.
 
 Usage:
-    python -m src.force_model.train [--config src/force_model/config.yaml]
+    python -m src.force_model.train --config src/force_model/config.yaml
 """
 
 from __future__ import annotations
