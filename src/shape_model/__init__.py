@@ -1,0 +1,2 @@
+"""Shape classification model package."""
+

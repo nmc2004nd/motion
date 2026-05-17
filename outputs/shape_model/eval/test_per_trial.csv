@@ -1,0 +1,5 @@
+trial,shape_true,shape_majority_pred,frame_accuracy,n_frames
+1/trial_004,unknown,unknown,1.0,80
+c1/trial_009,circle,circle,1.0,80
+s1/trial_002,square,square,0.9875,80
+t1/trial_002,triangle,triangle,1.0,80

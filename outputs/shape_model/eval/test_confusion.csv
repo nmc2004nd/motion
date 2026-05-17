@@ -1,0 +1,5 @@
+true\pred,circle,square,triangle,unknown
+circle,80,0,0,0
+square,0,79,1,0
+triangle,0,0,80,0
+unknown,0,0,0,80

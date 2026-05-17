@@ -1,0 +1,53 @@
+# Cấu hình classifier dự đoán shape object từ frame trong data/sessions.
+# Module này độc lập, chỉ đọc dữ liệu và ghi output dưới outputs/shape_model.
+
+data:
+  # Có thể khai báo nhiều root. Mỗi entry có thể là sessions root, session, hoặc trial.
+  data_roots:
+    - "data/sessions/c1"   # circle / tròn
+    - "data/sessions/s1"   # square / vuông
+    - "data/sessions/t1"   # triangle / tam giác
+    - "data/sessions/1"    # unknown / unknow
+  # Backward-compatible fallback nếu chỉ muốn truyền một root bằng --data-root.
+  data_root: "data/sessions"
+  image_size: [224, 224]       # H, W sau resize
+  max_frames_per_trial: 80     # null/0 để dùng tất cả frames
+  classes: ["circle", "square", "triangle", "unknown"]
+  fallback_shape_by_session:
+    "1": "unknown"
+  split:
+    train: 0.7
+    val: 0.15
+    test: 0.15
+  split_seed: 42
+
+model:
+  # "small_cnn" chạy offline/CPU; "resnet18" cần torchvision, pretrained có thể cần mạng.
+  backbone: "small_cnn"
+  pretrained: false
+  hidden_head: 128
+  dropout: 0.2
+
+train:
+  batch_size: 32
+  num_epochs: 40
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  early_stop_patience: 8
+  scheduler: "cosine"          # "cosine" | "none"
+  # Giữ 0 để chạy ổn trong sandbox/container không cho multiprocessing socket.
+  # Khi train trực tiếp trên máy local, có thể tăng lên 2-4 nếu muốn pipeline IO.
+  num_workers: 0
+  device: "auto"
+  checkpoint_dir: "outputs/shape_model/checkpoints"
+  log_dir: "outputs/shape_model/logs"
+
+augment:
+  enabled: true
+  flip_h_prob: 0.5
+  rotation_max_deg: 8.0
+  brightness_jitter: 0.12
+  contrast_jitter: 0.12
+
+infer:
+  checkpoint: "outputs/shape_model/checkpoints/best.pt"

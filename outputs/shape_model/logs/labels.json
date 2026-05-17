@@ -1,0 +1,6 @@
+{
+  "circle": 0,
+  "square": 1,
+  "triangle": 2,
+  "unknown": 3
+}

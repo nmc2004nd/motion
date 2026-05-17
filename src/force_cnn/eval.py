@@ -1,9 +1,9 @@
 """Evaluate best checkpoint trên một split: scatter, per-trial breakdown.
 
 Usage:
-    python -m src.force_cnn.eval [--config src/force_cnn/config.yaml]
-                                  [--split test]
-                                  [--out outputs/force_cnn/eval]
+    python -m src.force_cnn.eval --config src/force_cnn/config.yaml
+                                  --split test
+                                  --out outputs/force_cnn/eval
 """
 
 from __future__ import annotations

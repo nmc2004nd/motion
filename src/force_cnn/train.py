@@ -1,7 +1,7 @@
 """Training loop cho ForceCNN: trial-split, Huber, AdamW, cosine LR, early stop.
 
 Usage:
-    python -m src.force_cnn.train [--config src/force_cnn/config.yaml]
+    python -m src.force_cnn.train --config src/force_cnn/config.yaml
 """
 
 from __future__ import annotations
