@@ -1,11 +1,12 @@
-"""PySide realtime studio for tracking, slip, force, and shape tests.
+"""PySide realtime studio for tracking, slip, force tests, and video recording.
 
 Run:
     python -m src.collection.test_studio
 
-The UI intentionally avoids Imada, Arduino, and motor stepping. The operator
-chooses the mode and model(s), starts the camera, captures a reference when the
-selected mode needs marker tracking, then tests directly from the live stream.
+The UI intentionally avoids Imada, Arduino, motor stepping, and shape
+classification. The operator chooses the mode and model(s), starts the camera,
+captures a reference when the selected mode needs marker tracking, then tests
+directly from the live stream or records the overlayed video.
 """
 
 from __future__ import annotations
@@ -50,7 +51,6 @@ except ModuleNotFoundError as exc:
 
 import cv2
 import numpy as np
-import yaml
 
 if _qt_plugin_path.exists():
     os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = str(_qt_plugin_path)
@@ -66,24 +66,22 @@ from src.slip.v1 import SlipDetector
 
 
 PIPELINE_CONFIG_PATH = "config/pipeline_config.yaml"
-SHAPE_CONFIG_PATH = "src/shape_model/config.yaml"
+RECORDING_DIR = Path("outputs/recordings")
 
 MODE_LABELS = {
     "tracking": "Tracking",
     "slip_v1": "Slip V1",
     "force": "Force",
-    "shape": "Shape",
     "combined": "Force + Slip + Tracking",
-    "all": "All Features",
+    "all": "All Tests",
 }
 
 MODE_HELP = {
     "tracking": "LK marker tracking using realtime_tracking.py logic.",
     "slip_v1": "LK tracking plus SlipDetector V1 MRVL probability.",
     "force": "Force model inference from selected checkpoint.",
-    "shape": "Shape classifier from selected shape checkpoint.",
     "combined": "Force, slip V1, and marker tracking together.",
-    "all": "Tracking, slip V1, force inference, and shape classification.",
+    "all": "Tracking, slip V1, and force inference in one realtime view.",
 }
 
 
@@ -106,18 +104,6 @@ def _torch() -> Any:
     except Exception as exc:
         raise RuntimeError(f"Torch unavailable: {exc}") from exc
     return torch
-
-
-def _load_yaml(path: Path) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
-
-
-def _idx_to_label_from_ckpt(ckpt: dict) -> dict[int, str]:
-    if "idx_to_label" in ckpt:
-        return {int(k): str(v) for k, v in ckpt["idx_to_label"].items()}
-    label_to_idx = ckpt.get("label_to_idx", {})
-    return {int(v): str(k) for k, v in label_to_idx.items()}
 
 
 def discover_force_models() -> tuple[list[ModelEntry], str | None]:
@@ -144,28 +130,6 @@ def discover_force_models() -> tuple[list[ModelEntry], str | None]:
                 entries.append(ModelEntry("ForceCNN", ckpt_path, "forcecnn", val_mae, epoch))
         except Exception as exc:
             print(f"Skip force checkpoint {ckpt_path}: {exc}")
-    return entries, None
-
-
-def discover_shape_models() -> tuple[list[ModelEntry], str | None]:
-    try:
-        torch = _torch()
-    except RuntimeError as exc:
-        return [], str(exc)
-
-    candidates = sorted(Path("outputs/shape_model/checkpoints").glob("*.pt"))
-    if not candidates and Path("outputs/shape_model/checkpoints/best.pt").exists():
-        candidates = [Path("outputs/shape_model/checkpoints/best.pt")]
-
-    entries: list[ModelEntry] = []
-    for ckpt_path in candidates:
-        try:
-            ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
-            metric = float(ckpt.get("val_acc", ckpt.get("val_loss", math.nan)))
-            epoch = int(ckpt.get("epoch", -1))
-            entries.append(ModelEntry("ShapeClassifier", ckpt_path, "shape", metric, epoch))
-        except Exception as exc:
-            print(f"Skip shape checkpoint {ckpt_path}: {exc}")
     return entries, None
 
 
@@ -278,48 +242,6 @@ class ForceModelRunner:
             pred = self.model(self.torch.from_numpy(inp).to(self.device))
         return float(pred.item())
 
-
-class ShapeModelRunner:
-    def __init__(self, entry: ModelEntry) -> None:
-        self.entry = entry
-        self.torch = _torch()
-        self.device = self.torch.device("cuda" if self.torch.cuda.is_available() else "cpu")
-        self.config = _load_yaml(Path(SHAPE_CONFIG_PATH))
-        self.model, self.idx_to_label, self.image_size = self._build(entry)
-
-    def _build(self, entry: ModelEntry) -> tuple[Any, dict[int, str], tuple[int, int]]:
-        from src.shape_model.model import ShapeClassifier
-
-        ckpt = self.torch.load(str(entry.ckpt_path), map_location=self.device, weights_only=False)
-        idx_to_label = _idx_to_label_from_ckpt(ckpt)
-        if not idx_to_label:
-            raise RuntimeError(f"Checkpoint lacks label mapping: {entry.ckpt_path}")
-
-        cfg = self.config["model"]
-        model = ShapeClassifier(
-            num_classes=len(idx_to_label),
-            backbone=str(cfg["backbone"]),
-            pretrained=False,
-            hidden_head=int(cfg["hidden_head"]),
-            dropout=float(cfg["dropout"]),
-        ).to(self.device)
-        model.load_state_dict(ckpt["model_state"])
-        model.eval()
-        image_size = tuple(int(x) for x in self.config["data"]["image_size"])
-        return model, idx_to_label, (image_size[0], image_size[1])
-
-    def predict(self, frame_bgr: np.ndarray) -> tuple[str, float]:
-        h, w = self.image_size
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        rgb = cv2.resize(rgb, (w, h), interpolation=cv2.INTER_AREA)
-        x = (rgb.astype(np.float32) / 255.0).transpose(2, 0, 1)[None, ...]
-        with self.torch.no_grad():
-            logits = self.model(self.torch.from_numpy(x).float().to(self.device))
-            probs = self.torch.softmax(logits, dim=1).squeeze(0).cpu()
-        idx = int(self.torch.argmax(probs).item())
-        return self.idx_to_label[idx], float(probs[idx])
-
-
 class MetricCard(QFrame):
     def __init__(self, label: str, value: str, accent: str) -> None:
         super().__init__()
@@ -358,9 +280,12 @@ class MotionStudioWindow(QMainWindow):
         self.marker_history: list[np.ndarray] = []
         self.last_tick = time.monotonic()
         self.fps = 0.0
-        self.last_shape_ts = 0.0
-        self.shape_label = "---"
-        self.shape_conf = math.nan
+        self.recording = False
+        self.record_writer: cv2.VideoWriter | None = None
+        self.recording_path: Path | None = None
+        self.recording_started_at = 0.0
+        self.recording_fps = 30.0
+        self.recording_frame_count = 0
 
         self.clahe = make_clahe(self.config)
         self.blob_detector = create_blob_detector(self.config)
@@ -369,11 +294,8 @@ class MotionStudioWindow(QMainWindow):
         self.slip_threshold = float(require(self.config, "slip_detection.slip_threshold"))
 
         self.force_entries, self.force_error = discover_force_models()
-        self.shape_entries, self.shape_error = discover_shape_models()
         self.force_by_label = {entry.menu_label(): entry for entry in self.force_entries}
-        self.shape_by_label = {entry.menu_label(): entry for entry in self.shape_entries}
         self.force_runner: ForceModelRunner | None = None
-        self.shape_runner: ShapeModelRunner | None = None
 
         self._build_ui()
         self._apply_styles()
@@ -394,9 +316,9 @@ class MotionStudioWindow(QMainWindow):
         side_layout.setSpacing(14)
         outer.addWidget(side)
 
-        brand = QLabel("Motion Test")
+        brand = QLabel("Motion Studio")
         brand.setObjectName("brand")
-        subtitle = QLabel("tracking / slip / force / shape")
+        subtitle = QLabel("Realtime tracking, slip, force, and recording")
         subtitle.setObjectName("subtitle")
         side_layout.addWidget(brand)
         side_layout.addWidget(subtitle)
@@ -416,8 +338,7 @@ class MotionStudioWindow(QMainWindow):
         self.tracking_toggle = QCheckBox("Tracking overlay")
         self.slip_toggle = QCheckBox("Slip V1")
         self.force_toggle = QCheckBox("Force inference")
-        self.shape_toggle = QCheckBox("Shape classifier")
-        for toggle in (self.tracking_toggle, self.slip_toggle, self.force_toggle, self.shape_toggle):
+        for toggle in (self.tracking_toggle, self.slip_toggle, self.force_toggle):
             toggle.toggled.connect(self._on_feature_toggle)
             side_layout.addWidget(toggle)
 
@@ -442,17 +363,6 @@ class MotionStudioWindow(QMainWindow):
         side_layout.addWidget(self.force_load)
         side_layout.addWidget(self.force_state)
 
-        side_layout.addWidget(self._section("Shape Model"))
-        self.shape_combo = QComboBox()
-        self.shape_combo.addItems(list(self.shape_by_label) or ["No supported shape model"])
-        self.shape_load = QPushButton("Load Shape Model")
-        self.shape_load.clicked.connect(self._load_shape_model)
-        self.shape_state = QLabel(self.shape_error or "Not loaded")
-        self.shape_state.setWordWrap(True)
-        side_layout.addWidget(self.shape_combo)
-        side_layout.addWidget(self.shape_load)
-        side_layout.addWidget(self.shape_state)
-
         action_row = QHBoxLayout()
         self.capture_button = QPushButton("Capture Ref")
         self.capture_button.clicked.connect(self._capture_reference)
@@ -461,6 +371,15 @@ class MotionStudioWindow(QMainWindow):
         action_row.addWidget(self.capture_button)
         action_row.addWidget(clear_button)
         side_layout.addLayout(action_row)
+
+        side_layout.addWidget(self._section("Recording"))
+        self.record_button = QPushButton("Start Recording")
+        self.record_button.setObjectName("recordButton")
+        self.record_button.clicked.connect(self._toggle_recording)
+        self.record_state = QLabel(f"Videos save to {RECORDING_DIR.as_posix()}")
+        self.record_state.setWordWrap(True)
+        side_layout.addWidget(self.record_button)
+        side_layout.addWidget(self.record_state)
 
         side_layout.addStretch(1)
         self.status = QLabel("")
@@ -476,7 +395,7 @@ class MotionStudioWindow(QMainWindow):
         outer.addWidget(main, 1)
 
         header = QHBoxLayout()
-        self.title = QLabel("All Features")
+        self.title = QLabel("All Tests")
         self.title.setObjectName("title")
         self.reference_label = QLabel("No reference")
         self.reference_label.setObjectName("referenceLabel")
@@ -500,9 +419,9 @@ class MotionStudioWindow(QMainWindow):
         self.force_card = MetricCard("Force", "--- N", "#38bdf8")
         self.slip_card = MetricCard("Slip V1", "---", "#f59e0b")
         self.marker_card = MetricCard("Markers", "---", "#a78bfa")
-        self.shape_card = MetricCard("Shape", "---", "#2dd4bf")
         self.fps_card = MetricCard("FPS", "---", "#22c55e")
-        for col, card in enumerate((self.force_card, self.slip_card, self.marker_card, self.shape_card, self.fps_card)):
+        self.record_card = MetricCard("Recording", "idle", "#ef4444")
+        for col, card in enumerate((self.force_card, self.slip_card, self.marker_card, self.fps_card, self.record_card)):
             metrics.addWidget(card, 0, col)
         main_layout.addLayout(metrics)
 
@@ -516,32 +435,36 @@ class MotionStudioWindow(QMainWindow):
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget { background: #101214; color: #e5edf5; font-family: Inter, Segoe UI, Arial; }
-            #sidebar { background: #15171b; border-right: 1px solid #252a32; }
-            #main { background: #101214; }
-            #brand { font-size: 30px; font-weight: 800; color: #f7fafc; }
-            #subtitle, #help, #referenceLabel, #status { color: #8c96a3; }
-            #title { font-size: 30px; font-weight: 800; color: #f7fafc; }
-            #section { margin-top: 8px; color: #69717c; font-size: 11px; font-weight: 800; letter-spacing: 0; }
-            QRadioButton { spacing: 10px; color: #dbe2ea; padding: 5px 0; }
-            QRadioButton::indicator { width: 16px; height: 16px; }
+            QMainWindow, QWidget { background: #0b1120; color: #e5edf5; font-family: Inter, Segoe UI, Arial; }
+            #sidebar { background: #111827; border-right: 1px solid #223047; }
+            #main { background: #0b1120; }
+            #brand { font-size: 31px; font-weight: 900; color: #f8fafc; }
+            #subtitle, #help, #referenceLabel, #status { color: #94a3b8; }
+            #title { font-size: 31px; font-weight: 900; color: #f8fafc; }
+            #section { margin-top: 10px; color: #64748b; font-size: 11px; font-weight: 900; letter-spacing: 0; }
+            QRadioButton, QCheckBox { spacing: 10px; color: #dbeafe; padding: 6px 2px; }
+            QRadioButton::indicator, QCheckBox::indicator { width: 16px; height: 16px; }
             QLineEdit, QComboBox {
-                background: #1a1d22; border: 1px solid #2b313a; border-radius: 7px;
-                padding: 8px 10px; color: #f7fafc;
+                background: #172033; border: 1px solid #2c3b55; border-radius: 8px;
+                padding: 9px 10px; color: #f8fafc;
             }
             QPushButton {
-                background: #242a32; border: 1px solid #303743; border-radius: 7px;
-                padding: 9px 12px; color: #f7fafc; font-weight: 700;
+                background: #1d4ed8; border: 1px solid #2563eb; border-radius: 8px;
+                padding: 10px 12px; color: #f8fafc; font-weight: 800;
             }
-            QPushButton:hover { background: #303743; }
-            QPushButton:disabled { color: #69717c; background: #1a1d22; }
+            QPushButton:hover { background: #2563eb; }
+            QPushButton:disabled { color: #64748b; background: #172033; border-color: #263247; }
+            QPushButton#recordButton { background: #334155; border-color: #475569; }
+            QPushButton#recordButton:hover { background: #475569; }
+            QPushButton#recordButton[recording="true"] { background: #dc2626; border-color: #ef4444; }
+            QPushButton#recordButton[recording="true"]:hover { background: #b91c1c; }
             #video {
-                background: #181b20; border: 1px solid #252a32; border-radius: 8px;
-                color: #69717c; font-size: 18px;
+                background: #020617; border: 1px solid #223047; border-radius: 8px;
+                color: #64748b; font-size: 18px;
             }
-            #metricCard { background: #181b20; border: 1px solid #252a32; border-radius: 8px; }
-            #metricTitle { color: #69717c; font-size: 11px; font-weight: 800; }
-            #metricValue { font-size: 25px; font-weight: 800; }
+            #metricCard { background: #111827; border: 1px solid #223047; border-radius: 8px; }
+            #metricTitle { color: #64748b; font-size: 11px; font-weight: 900; }
+            #metricValue { font-size: 25px; font-weight: 900; }
             """
         )
 
@@ -555,9 +478,6 @@ class MotionStudioWindow(QMainWindow):
     def _mode_uses_force(self) -> bool:
         return self._force_enabled()
 
-    def _mode_uses_shape(self) -> bool:
-        return self._shape_enabled()
-
     def _mode_uses_slip(self) -> bool:
         return self._slip_enabled()
 
@@ -570,16 +490,15 @@ class MotionStudioWindow(QMainWindow):
 
     def _apply_mode_preset(self, key: str) -> None:
         presets = {
-            "tracking": (True, False, False, False),
-            "slip_v1": (True, True, False, False),
-            "force": (True, False, True, False),
-            "shape": (False, False, False, True),
-            "combined": (True, True, True, False),
-            "all": (True, True, True, True),
+            "tracking": (True, False, False),
+            "slip_v1": (True, True, False),
+            "force": (True, False, True),
+            "combined": (True, True, True),
+            "all": (True, True, True),
         }
         states = presets.get(key, presets["all"])
         for toggle, checked in zip(
-            (self.tracking_toggle, self.slip_toggle, self.force_toggle, self.shape_toggle),
+            (self.tracking_toggle, self.slip_toggle, self.force_toggle),
             states,
         ):
             toggle.blockSignals(True)
@@ -593,11 +512,8 @@ class MotionStudioWindow(QMainWindow):
         self.marker_history = []
         self.slip_detector.reset()
         force_active = self._force_enabled() and bool(self.force_by_label)
-        shape_active = self._shape_enabled() and bool(self.shape_by_label)
         self.force_combo.setEnabled(force_active)
         self.force_load.setEnabled(force_active)
-        self.shape_combo.setEnabled(shape_active)
-        self.shape_load.setEnabled(shape_active)
         active = []
         if self._tracking_enabled():
             active.append("tracking")
@@ -605,8 +521,6 @@ class MotionStudioWindow(QMainWindow):
             active.append("slip")
         if self._force_enabled():
             active.append("force")
-        if self._shape_enabled():
-            active.append("shape")
         self._set_status("Active features: " + (", ".join(active) if active else "none"))
 
     def _tracking_enabled(self) -> bool:
@@ -617,9 +531,6 @@ class MotionStudioWindow(QMainWindow):
 
     def _force_enabled(self) -> bool:
         return self.force_toggle.isChecked()
-
-    def _shape_enabled(self) -> bool:
-        return self.shape_toggle.isChecked()
 
     def _toggle_camera(self) -> None:
         if self.cap is not None:
@@ -644,13 +555,106 @@ class MotionStudioWindow(QMainWindow):
 
     def _stop_camera(self) -> None:
         self.timer.stop()
+        stopped_recording = self.recording or self.record_writer is not None
+        if stopped_recording:
+            self._stop_recording()
         if self.cap is not None:
             self.cap.release()
             self.cap = None
         self.video.setText("Camera stopped")
         self.video.setPixmap(QPixmap())
         self.camera_button.setText("Start")
-        self._set_status("Camera stopped.")
+        if not stopped_recording:
+            self._set_status("Camera stopped.")
+
+    def _toggle_recording(self) -> None:
+        if self.recording or self.record_writer is not None:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self) -> None:
+        if self.cap is None:
+            self._set_status("Start camera before recording.")
+            return
+
+        RECORDING_DIR.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        self.recording_path = RECORDING_DIR / f"motion_studio_{timestamp}.mp4"
+        fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if not math.isfinite(fps) or fps < 1.0 or fps > 120.0:
+            fps = 30.0
+        self.recording_fps = fps
+        self.record_writer = None
+        self.recording_frame_count = 0
+        self.recording_started_at = time.monotonic()
+        self.recording = True
+        self.record_button.setText("Stop & Save")
+        self.record_button.setProperty("recording", True)
+        self._refresh_record_button_style()
+        self.record_state.setText(f"Recording: {self.recording_path.as_posix()}")
+        self._set_status("Recording started.")
+
+    def _stop_recording(self) -> None:
+        path = self.recording_path
+        elapsed = max(time.monotonic() - self.recording_started_at, 0.0)
+        if self.record_writer is not None:
+            self.record_writer.release()
+            self.record_writer = None
+        self.recording = False
+        self.record_button.setText("Start Recording")
+        self.record_button.setProperty("recording", False)
+        self._refresh_record_button_style()
+
+        if path is None or self.recording_frame_count == 0:
+            self.record_state.setText("No frames recorded.")
+            self._set_status("Recording stopped without frames.")
+            return
+
+        self.record_state.setText(
+            f"Saved: {path.as_posix()} | {self.recording_frame_count} frames | {elapsed:.1f}s"
+        )
+        self._set_status(f"Video saved to {path.as_posix()}.")
+
+    def _write_recording_frame(self) -> None:
+        if not self.recording or self.recording_path is None:
+            return
+
+        frame = self._grab_window_frame()
+        if self.record_writer is None:
+            h, w = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self.record_writer = cv2.VideoWriter(
+                str(self.recording_path),
+                fourcc,
+                self.recording_fps,
+                (w, h),
+            )
+            if not self.record_writer.isOpened():
+                self.record_writer.release()
+                self.record_writer = None
+                self.recording = False
+                self.record_button.setText("Start Recording")
+                self.record_button.setProperty("recording", False)
+                self._refresh_record_button_style()
+                self.record_state.setText("Cannot create video writer.")
+                self._set_status("Recording failed: cannot create video writer.")
+                return
+
+        self.record_writer.write(np.ascontiguousarray(frame))
+        self.recording_frame_count += 1
+
+    def _grab_window_frame(self) -> np.ndarray:
+        image = self.grab().toImage().convertToFormat(QImage.Format_RGB888)
+        w, h = image.width(), image.height()
+        bytes_per_line = image.bytesPerLine()
+        data = np.frombuffer(image.bits(), dtype=np.uint8).reshape((h, bytes_per_line))
+        rgb = data[:, : w * 3].reshape((h, w, 3)).copy()
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    def _refresh_record_button_style(self) -> None:
+        self.record_button.style().unpolish(self.record_button)
+        self.record_button.style().polish(self.record_button)
 
     def _load_force_model(self) -> None:
         entry = self.force_by_label.get(self.force_combo.currentText())
@@ -665,20 +669,6 @@ class MotionStudioWindow(QMainWindow):
             return
         self.force_state.setText(f"Loaded on {self.force_runner.device}: {entry.ckpt_path}")
         self._set_status("Force model loaded.")
-
-    def _load_shape_model(self) -> None:
-        entry = self.shape_by_label.get(self.shape_combo.currentText())
-        if entry is None:
-            return
-        try:
-            self.shape_runner = ShapeModelRunner(entry)
-        except Exception as exc:
-            self.shape_runner = None
-            self.shape_state.setText(f"Load failed: {exc}")
-            self._set_status("Shape model load failed.")
-            return
-        self.shape_state.setText(f"Loaded on {self.shape_runner.device}: {entry.ckpt_path}")
-        self._set_status("Shape model loaded.")
 
     def _capture_reference(self) -> None:
         if self.latest_gray is None:
@@ -723,8 +713,9 @@ class MotionStudioWindow(QMainWindow):
         self.force_card.value.setText(metrics["force"])
         self.slip_card.value.setText(metrics["slip"])
         self.marker_card.value.setText(metrics["markers"])
-        self.shape_card.value.setText(metrics["shape"])
         self.fps_card.value.setText(metrics["fps"])
+        self.record_card.value.setText(self._recording_text())
+        self._write_recording_frame()
 
     def _process_frame(self, gray: np.ndarray, frame: np.ndarray) -> tuple[np.ndarray, dict[str, str]]:
         key = self._mode_key()
@@ -732,8 +723,8 @@ class MotionStudioWindow(QMainWindow):
             "force": "--- N",
             "slip": "---",
             "markers": "---",
-            "shape": self._shape_text(),
             "fps": f"{self.fps:.1f}",
+            "recording": self._recording_text(),
         }
 
         ref_gray = self.reference_gray
@@ -744,8 +735,6 @@ class MotionStudioWindow(QMainWindow):
         if self._mode_needs_reference():
             if ref_gray is None or ref_pts is None or len(ref_pts) == 0:
                 self._draw_text(display, "Capture reference to start marker-based tests", (18, 34), "#f59e0b")
-                if self._mode_uses_shape():
-                    self._maybe_predict_shape(frame, metrics)
                 return display, metrics
 
             tracked, valid = track_markers_lk(ref_gray, gray, ref_pts, config=self.config)
@@ -780,39 +769,18 @@ class MotionStudioWindow(QMainWindow):
                     metrics["force"] = "error"
                     self.force_state.setText(f"Inference error: {exc}")
 
-        if self._mode_uses_shape():
-            self._maybe_predict_shape(frame, metrics)
-
         self._draw_text(display, MODE_LABELS[key], (18, 34), "#22c55e")
         if metrics["force"] not in {"--- N", "no model"}:
             self._draw_text(display, f"Force: {metrics['force']}", (18, 110), "#38bdf8")
-        if metrics["shape"] != "---":
-            self._draw_text(display, f"Shape: {metrics['shape']}", (18, 148), "#2dd4bf")
+        if self.recording:
+            self._draw_text(display, f"REC {self._recording_text()}", (18, 148), "#ef4444")
         return display, metrics
 
-    def _maybe_predict_shape(self, frame: np.ndarray, metrics: dict[str, str]) -> None:
-        if self.shape_runner is None:
-            metrics["shape"] = "no model"
-            return
-        now = time.monotonic()
-        if now - self.last_shape_ts < 0.5:
-            metrics["shape"] = self._shape_text()
-            return
-        self.last_shape_ts = now
-        try:
-            label, conf = self.shape_runner.predict(frame)
-        except Exception as exc:
-            self.shape_state.setText(f"Inference error: {exc}")
-            metrics["shape"] = "error"
-            return
-        self.shape_label = label
-        self.shape_conf = conf
-        metrics["shape"] = self._shape_text()
-
-    def _shape_text(self) -> str:
-        if self.shape_label == "---" or math.isnan(self.shape_conf):
-            return "---"
-        return f"{self.shape_label} {self.shape_conf:.2f}"
+    def _recording_text(self) -> str:
+        if not self.recording:
+            return "idle"
+        elapsed = max(time.monotonic() - self.recording_started_at, 0.0)
+        return f"{elapsed:.1f}s"
 
     def _show_frame(self, bgr: np.ndarray) -> None:
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
