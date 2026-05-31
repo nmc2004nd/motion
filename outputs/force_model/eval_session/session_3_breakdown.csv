@@ -1,0 +1,2 @@
+trial_path,n_frames,mae,rmse,r2
+data/cache/force_model/3/trial_001.npz,365,0.20626948773860931,0.23099356235372775,0.880451522457287

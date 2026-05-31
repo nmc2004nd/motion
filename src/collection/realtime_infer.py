@@ -16,6 +16,7 @@ import re
 import statistics
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from src.core.detection import create_blob_detector, detect_markers
 from src.core.preprocessing import make_clahe, preprocess
 from src.core.tracking import track_markers_lk
 from src.core.visualization import visualize_flow_arrows
+from src.force_cnn.model import ForceCNN
 from src.force_model.model import ForceNet
 from src.force_poly.features import compute_features_v1, feature_dim
 from src.force_poly.model import PolynomialRegressor
@@ -45,9 +47,19 @@ ARDUINO_PORT  = "/dev/ttyACM0"
 IMADA_PORT    = "/dev/ttyACM1"
 ARDUINO_BAUD  = 115200
 IMADA_BAUD    = 19200
-CAMERA_ID     = 2
+CAMERA_ID     = 0
 CAMERA_WIDTH  = 1280
 CAMERA_HEIGHT = 1080
+
+MODEL_TARE_SAMPLES = 20
+MODEL_EMA_ALPHA    = 0.35
+DIAG_LOG_SECONDS   = 10
+FORCE_ALIGN_TOLERANCE_S = 0.12
+DELTA_SPIKE_N = 0.10
+
+LEGACY_DELTA_LOG_PATH = Path("data/infer_delta_log.csv")
+SUMMARY_LOG_PATH      = Path("data/infer_delta_summary_log_v4.csv")
+SAMPLES_LOG_PATH      = Path("data/infer_samples_log_v4.csv")
 
 _IMADA_NUM_RE = re.compile(r"[-+]?\d*\.?\d+")
 
@@ -62,6 +74,62 @@ def _parse_imada(raw: str) -> float:
     return float(m.group(0)) if m else math.nan
 
 
+def _finite(values) -> list[float]:
+    out: list[float] = []
+    for v in values:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if not math.isnan(f):
+            out.append(f)
+    return out
+
+
+def _mean_or_nan(values) -> float:
+    vals = _finite(values)
+    return statistics.mean(vals) if vals else math.nan
+
+
+def _stdev_or_zero(values) -> float:
+    vals = _finite(values)
+    return statistics.stdev(vals) if len(vals) > 1 else 0.0
+
+
+def _round_or_nan(value: float, ndigits: int = 4) -> float:
+    return math.nan if math.isnan(value) else round(float(value), ndigits)
+
+
+def _disp_debug_stats(
+    ref_pts: np.ndarray | None,
+    tracked: np.ndarray | None,
+    valid: np.ndarray | None,
+) -> dict[str, float]:
+    stats = {
+        "valid_ratio": math.nan,
+        "disp_mean_px": math.nan,
+        "disp_max_px": math.nan,
+        "dx_mean_px": math.nan,
+        "dy_mean_px": math.nan,
+    }
+    if ref_pts is None or tracked is None or valid is None or len(ref_pts) == 0:
+        return stats
+    stats["valid_ratio"] = float(valid.sum()) / float(len(ref_pts))
+    if not valid.any():
+        return stats
+
+    disp = (tracked - ref_pts).astype(np.float32)
+    d = disp[valid]
+    mag = np.sqrt(d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1])
+    stats.update({
+        "disp_mean_px": float(mag.mean()),
+        "disp_max_px": float(mag.max()),
+        "dx_mean_px": float(d[:, 0].mean()),
+        "dy_mean_px": float(d[:, 1].mean()),
+    })
+    return stats
+
+
 # ---------------------------------------------------------------------------- #
 #  Model registry                                                               #
 # ---------------------------------------------------------------------------- #
@@ -71,7 +139,7 @@ def _parse_imada(raw: str) -> float:
 class ModelEntry:
     label: str          # tên ngắn để hiển thị
     ckpt_path: Path
-    model_type: str     # "forcenet" | "polyregressor" | "unknown"
+    model_type: str     # "forcenet" | "polyregressor" | "forcecnn" | "unknown"
     val_mae: float
     epoch: int
 
@@ -84,11 +152,22 @@ def _classify_checkpoint(ckpt_path: Path) -> ModelEntry:
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     val_mae = float(ckpt.get("val_mae", math.nan))
     epoch   = int(ckpt.get("epoch", -1))
+    folder = ckpt_path.parent.parent.name
+    cfg = ckpt.get("config", {})
+    model_cfg = cfg.get("model", {})
+    data_cfg = cfg.get("data", {})
     if "n_max" in ckpt:
         return ModelEntry("ForceNet", ckpt_path, "forcenet", val_mae, epoch)
     if "feature_set" in ckpt:
         return ModelEntry("PolyReg", ckpt_path, "polyregressor", val_mae, epoch)
-    folder = ckpt_path.parent.parent.name
+    if (
+        "val_mae" in ckpt
+        and "model_state" in ckpt
+        and "backbone" in model_cfg
+        and "image_size" in data_cfg
+        and ("force_cnn" in folder or "force_cnn" in str(ckpt_path))
+    ):
+        return ModelEntry("ForceCNN", ckpt_path, "forcecnn", val_mae, epoch)
     return ModelEntry(folder, ckpt_path, "unknown", val_mae, epoch)
 
 
@@ -112,12 +191,12 @@ def discover_models() -> list[ModelEntry]:
 
 
 class ModelRunner:
-    """Wrapper inference cho cả ForceNet và PolynomialRegressor."""
+    """Wrapper inference cho ForceNet, PolynomialRegressor và ForceCNN."""
 
     def __init__(self, entry: ModelEntry, device: torch.device) -> None:
         self.entry = entry
         self._device = device
-        self._model, self._n_max = self._build(entry, device)
+        self._model, self._n_max, self._image_size = self._build(entry, device)
 
     def _build(self, entry: ModelEntry, device: torch.device):
         ckpt = torch.load(str(entry.ckpt_path), map_location=device, weights_only=False)
@@ -132,7 +211,7 @@ class ModelRunner:
             ).to(device)
             model.load_state_dict(ckpt["model_state"])
             model.eval()
-            return model, int(ckpt.get("n_max", 150))
+            return model, int(ckpt.get("n_max", 150)), None
 
         if entry.model_type == "polyregressor":
             model = PolynomialRegressor(
@@ -144,18 +223,39 @@ class ModelRunner:
             ).to(device)
             model.load_state_dict(ckpt["model_state"])
             model.eval()
-            return model, None
+            return model, None, None
+
+        if entry.model_type == "forcecnn":
+            model = ForceCNN(
+                in_channels=2,
+                backbone=str(cfg["backbone"]),
+                pretrained=False,
+                hidden_head=int(cfg["hidden_head"]),
+                dropout=float(cfg["dropout"]),
+            ).to(device)
+            model.load_state_dict(ckpt["model_state"])
+            model.eval()
+            image_size = tuple(int(x) for x in ckpt["config"]["data"]["image_size"])
+            return model, None, (image_size[0], image_size[1])
 
         raise ValueError(f"Không hỗ trợ model_type={entry.model_type!r}")
 
     def predict(
         self,
-        ref_pts: np.ndarray,
-        tracked: np.ndarray,
-        valid: np.ndarray,
+        ref_pts: np.ndarray | None,
+        tracked: np.ndarray | None,
+        valid: np.ndarray | None,
         W: int,
         H: int,
+        ref_gray: np.ndarray | None = None,
+        gray: np.ndarray | None = None,
     ) -> float:
+        if self.entry.model_type == "forcecnn":
+            if ref_gray is None or gray is None:
+                return math.nan
+            return self._predict_forcecnn(ref_gray, gray)
+        if ref_pts is None or tracked is None or valid is None:
+            return math.nan
         if self.entry.model_type == "forcenet":
             return self._predict_forcenet(ref_pts, tracked, valid, W, H)
         if self.entry.model_type == "polyregressor":
@@ -188,6 +288,19 @@ class ModelRunner:
                 self._model(torch.from_numpy(feat[None, :]).to(self._device)).item()
             )
 
+    def _predict_forcecnn(self, ref_gray: np.ndarray, gray: np.ndarray) -> float:
+        if self._image_size is None:
+            return math.nan
+        h, w = self._image_size
+        ref = cv2.resize(ref_gray, (w, h), interpolation=cv2.INTER_AREA)
+        frame = cv2.resize(gray, (w, h), interpolation=cv2.INTER_AREA)
+        inp = np.stack(
+            [ref.astype(np.float32) / 255.0, frame.astype(np.float32) / 255.0],
+            axis=0,
+        )[None, ...].astype(np.float32)
+        with torch.no_grad():
+            return float(self._model(torch.from_numpy(inp).to(self._device)).item())
+
 
 # ---------------------------------------------------------------------------- #
 #  ForceInferStation                                                            #
@@ -202,9 +315,23 @@ class ForceInferStation:
 
         self._latest_vis: np.ndarray | None = None
         self._latest_force_n: float = math.nan
+        self._latest_force_ts_mono: float = math.nan
+        self._latest_force_raw_line: str = ""
+        self._force_history: deque[tuple[float, float, str]] = deque(maxlen=500)
+        self._latest_pred_raw_force: float = math.nan
+        self._latest_pred_tared_force: float = math.nan
         self._latest_pred_force: float = math.nan
+        self._latest_frame_ts_mono: float = math.nan
+        self._latest_infer_ms: float = math.nan
         self._latest_n_valid: int = 0
         self._force_zero_n: float = math.nan
+        self._model_zero_n: float = math.nan
+        self._model_tare_pending = False
+        self._model_tare_samples: list[float] = []
+        self._model_ema_n: float = math.nan
+        self._latest_debug: dict[str, float] = _disp_debug_stats(None, None, None)
+        self._latest_model_label = ""
+        self._latest_model_type = ""
 
         self._ref_image: np.ndarray | None = None
         self._ref_markers: np.ndarray | None = None
@@ -220,8 +347,10 @@ class ForceInferStation:
         self._logging_active  = False
         self._delta_samples:  list[dict] = []
         self._log_start_time  = 0.0
+        self._log_id          = ""
         self._log_command     = ""
         self._log_distance    = 0.0
+        self._diag_after_id   = None
 
         self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self._pipeline_config = load_config(PIPELINE_CONFIG_PATH)
@@ -403,7 +532,7 @@ class ForceInferStation:
             font=ctk.CTkFont(weight="bold", size=15),
         ).pack(pady=10)
 
-        self.distance_var = ctk.StringVar(value="150")
+        self.distance_var = ctk.StringVar(value="1")
         inp = ctk.CTkFrame(right, fg_color="transparent")
         inp.pack(pady=8)
         ctk.CTkLabel(inp, text="Distance (mm):").grid(row=0, column=0, padx=5)
@@ -442,6 +571,10 @@ class ForceInferStation:
             wraplength=240, justify="left",
         )
         self.lbl_log_status.pack(padx=12, pady=(2, 8), anchor="w")
+        ctk.CTkButton(
+            right, text="DIAG 10s", command=self._diag_log_10s,
+            fg_color="#6f42c1", hover_color="#5a32a3",
+        ).pack(pady=(0, 8), padx=20, fill="x")
 
         conn_text = "Connected" if self.arduino_connected else "Disconnected"
         ctk.CTkLabel(
@@ -465,6 +598,9 @@ class ForceInferStation:
             runner = ModelRunner(entry, self._device)
             with self._runner_lock:
                 self._runner = runner
+            with self._lock:
+                self._latest_model_label = entry.label
+                self._latest_model_type = entry.model_type
             self.lbl_model_info.configure(
                 text=f"{entry.model_type}  |  {entry.ckpt_path}",
                 text_color="#28a745",
@@ -473,9 +609,33 @@ class ForceInferStation:
         except Exception as e:
             with self._runner_lock:
                 self._runner = None
+            with self._lock:
+                self._latest_pred_raw_force = math.nan
+                self._latest_pred_tared_force = math.nan
+                self._latest_pred_force = math.nan
+                self._latest_frame_ts_mono = math.nan
+                self._latest_infer_ms = math.nan
+                self._model_zero_n = math.nan
+                self._model_tare_pending = False
+                self._model_tare_samples = []
+                self._model_ema_n = math.nan
+                self._latest_model_label = ""
+                self._latest_model_type = ""
             self.lbl_model_info.configure(
                 text=f"Load thất bại: {e}", text_color="#dc3545",
             )
+
+    def _begin_model_tare(self) -> None:
+        with self._lock:
+            self._latest_pred_raw_force = math.nan
+            self._latest_pred_tared_force = math.nan
+            self._latest_pred_force = math.nan
+            self._latest_frame_ts_mono = math.nan
+            self._latest_infer_ms = math.nan
+            self._model_zero_n = math.nan
+            self._model_tare_pending = True
+            self._model_tare_samples = []
+            self._model_ema_n = math.nan
 
     def _on_model_selected(self, choice: str) -> None:
         entry = next((e for e in self._model_entries if e.menu_label() == choice), None)
@@ -483,11 +643,15 @@ class ForceInferStation:
             return
         self._set_status(f"Đang load {entry.label}…")
         self._load_runner(entry)
-        with self._lock:
-            self._latest_pred_force = math.nan
+        with self._ref_lock:
+            has_ref = self._ref_image is not None
+        if has_ref:
+            self._begin_model_tare()
         self._show_toast(f"Đã chuyển sang {entry.label}", color="#0d6efd")
+        tare_msg = " | đang lấy model zero" if has_ref else ""
         self._set_status(
-            f"Model active: {entry.label}  |  MAE={entry.val_mae:.4f} N  |  epoch={entry.epoch}"
+            f"Model active: {entry.label}  |  MAE={entry.val_mae:.4f} N  "
+            f"|  epoch={entry.epoch}{tare_msg}"
         )
 
     # ------------------------------------------------------------------ #
@@ -512,12 +676,14 @@ class ForceInferStation:
             self._ref_markers = markers
         with self._lock:
             self._force_zero_n = zero
+        self._begin_model_tare()
 
         self.btn_clear_ref.configure(state="normal")
         n = len(markers)
         self._show_toast(f"Reference đã capture: {n} markers", color="#6610f2")
         self._set_status(
-            f"Reference: {n} markers  |  force zero={zero:.4f} N  |  Sẵn sàng inference."
+            f"Reference: {n} markers  |  force zero={zero:.4f} N  "
+            f"|  đang lấy model zero ({MODEL_TARE_SAMPLES} samples)."
         )
 
     def _on_clear_reference(self) -> None:
@@ -525,7 +691,16 @@ class ForceInferStation:
             self._ref_image   = None
             self._ref_markers = None
         with self._lock:
+            self._latest_pred_raw_force = math.nan
+            self._latest_pred_tared_force = math.nan
             self._latest_pred_force = math.nan
+            self._latest_frame_ts_mono = math.nan
+            self._latest_infer_ms = math.nan
+            self._model_zero_n = math.nan
+            self._model_tare_pending = False
+            self._model_tare_samples = []
+            self._model_ema_n = math.nan
+            self._latest_debug = _disp_debug_stats(None, None, None)
         self.btn_clear_ref.configure(state="disabled")
         self._show_toast("Reference đã xoá", color="#495057")
         self._set_status("Reference đã xoá — capture lại để tiếp tục.")
@@ -542,14 +717,70 @@ class ForceInferStation:
             time.sleep(0.05)
         return statistics.median(samples) if samples else math.nan
 
+    def _apply_model_tare_locked(self, pred_raw: float) -> tuple[float, float]:
+        """Trừ baseline model tại reference và lọc EMA nhẹ. Gọi khi đã giữ _lock."""
+        if math.isnan(pred_raw):
+            return math.nan, math.nan
+
+        if self._model_tare_pending:
+            self._model_tare_samples.append(pred_raw)
+            if len(self._model_tare_samples) < MODEL_TARE_SAMPLES:
+                return math.nan, math.nan
+            self._model_zero_n = statistics.median(self._model_tare_samples)
+            self._model_tare_pending = False
+            self._model_tare_samples = []
+            self._model_ema_n = math.nan
+
+        zero = 0.0 if math.isnan(self._model_zero_n) else self._model_zero_n
+        pred_tared = pred_raw - zero
+        if math.isnan(self._model_ema_n):
+            self._model_ema_n = pred_tared
+        else:
+            self._model_ema_n = (
+                MODEL_EMA_ALPHA * pred_tared
+                + (1.0 - MODEL_EMA_ALPHA) * self._model_ema_n
+            )
+        return pred_tared, self._model_ema_n
+
+    def _nearest_force_locked(
+        self,
+        ts_mono: float,
+        tolerance_s: float = FORCE_ALIGN_TOLERANCE_S,
+    ) -> tuple[float, float, str, float]:
+        """Trả force sample gần frame timestamp nhất. Gọi khi đã giữ _lock."""
+        if math.isnan(ts_mono) or not self._force_history:
+            return math.nan, math.nan, "", math.nan
+
+        best_ts, best_force, best_raw = min(
+            self._force_history, key=lambda item: abs(item[0] - ts_mono),
+        )
+        dt = ts_mono - best_ts
+        if abs(dt) > tolerance_s:
+            return math.nan, math.nan, "", math.nan
+        return best_force, best_ts, best_raw, dt
+
     # ------------------------------------------------------------------ #
     #  Motor commands                                                      #
     # ------------------------------------------------------------------ #
+
+    def _model_tare_ready(self) -> bool:
+        with self._lock:
+            pending = self._model_tare_pending
+            count = len(self._model_tare_samples)
+        if pending:
+            self._set_status(
+                f"Đợi model tare xong ({count}/{MODEL_TARE_SAMPLES}) rồi hãy chạy motor.",
+                error=True,
+            )
+            return False
+        return True
 
     def _forward(self) -> None:
         try:
             d = float(self.distance_var.get())
         except ValueError:
+            return
+        if not self._model_tare_ready():
             return
         self._cmd_queue.put(f"f {d}")
         self._start_log("forward", d)
@@ -558,6 +789,8 @@ class ForceInferStation:
         try:
             d = float(self.distance_var.get())
         except ValueError:
+            return
+        if not self._model_tare_ready():
             return
         self._cmd_queue.put(f"b {d}")
         self._start_log("backward", d)
@@ -578,38 +811,69 @@ class ForceInferStation:
                 time.sleep(0.01)
                 continue
 
+            frame_ts_mono = time.monotonic()
+            infer_start = time.perf_counter()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             vis  = frame.copy()
-            pred = math.nan
+            pred_raw = math.nan
             n_valid = 0
+            tracked = None
+            valid = None
+            debug_stats = _disp_debug_stats(None, None, None)
+            model_label = ""
+            model_type = ""
 
             with self._ref_lock:
                 ref_img = self._ref_image
                 ref_pts = self._ref_markers
 
-            if ref_img is not None and ref_pts is not None and len(ref_pts) > 0:
-                tracked, valid = track_markers_lk(
-                    ref_img, gray, ref_pts,
-                    self._pipeline_config, apply_deadzone=False,
-                )
-                vis = visualize_flow_arrows(
-                    gray, ref_pts, tracked, valid,
-                    config=self._pipeline_config, save_path=None,
-                )
-                n_valid = int(valid.sum())
+            if ref_img is not None:
+                if ref_pts is not None and len(ref_pts) > 0:
+                    tracked, valid = track_markers_lk(
+                        ref_img, gray, ref_pts,
+                        self._pipeline_config, apply_deadzone=False,
+                    )
+                    vis = visualize_flow_arrows(
+                        gray, ref_pts, tracked, valid,
+                        config=self._pipeline_config, save_path=None,
+                    )
+                    n_valid = int(valid.sum())
+                    debug_stats = _disp_debug_stats(ref_pts, tracked, valid)
                 with self._runner_lock:
                     runner = self._runner
-                if runner is not None and n_valid > 0:
+                if runner is not None:
+                    model_label = runner.entry.label
+                    model_type = runner.entry.model_type
                     H, W = gray.shape
                     try:
-                        pred = runner.predict(ref_pts, tracked, valid, W, H)
+                        if runner.entry.model_type == "forcecnn":
+                            pred_raw = runner.predict(
+                                ref_pts, tracked, valid, W, H,
+                                ref_gray=ref_img, gray=gray,
+                            )
+                        elif (
+                            ref_pts is not None
+                            and tracked is not None
+                            and valid is not None
+                            and n_valid > 0
+                        ):
+                            pred_raw = runner.predict(ref_pts, tracked, valid, W, H)
                     except Exception as e:
                         print(f"Inference error: {e}")
 
+            infer_ms = (time.perf_counter() - infer_start) * 1000.0
             with self._lock:
+                pred_tared, pred_display = self._apply_model_tare_locked(pred_raw)
                 self._latest_vis        = vis
-                self._latest_pred_force = pred
+                self._latest_pred_raw_force = pred_raw
+                self._latest_pred_tared_force = pred_tared
+                self._latest_pred_force = pred_display
+                self._latest_frame_ts_mono = frame_ts_mono
+                self._latest_infer_ms = infer_ms
                 self._latest_n_valid    = n_valid
+                self._latest_debug      = debug_stats
+                self._latest_model_label = model_label
+                self._latest_model_type = model_type
 
     def _worker_imada(self) -> None:
         while True:
@@ -620,8 +884,14 @@ class ForceInferStation:
                         "utf-8", errors="ignore",
                     ).strip()
                     if raw:
+                        force_ts_mono = time.monotonic()
+                        force_n = _parse_imada(raw)
                         with self._lock:
-                            self._latest_force_n = _parse_imada(raw)
+                            self._latest_force_n = force_n
+                            self._latest_force_ts_mono = force_ts_mono
+                            self._latest_force_raw_line = raw
+                            if not math.isnan(force_n):
+                                self._force_history.append((force_ts_mono, force_n, raw))
                 except Exception as e:
                     print(f"Imada read error: {e}")
             time.sleep(0.05)
@@ -676,22 +946,70 @@ class ForceInferStation:
 
     def _start_log(self, direction: str, distance: float) -> None:
         """Bắt đầu thu thập delta samples cho lệnh điều khiển mới."""
+        if self._diag_after_id is not None:
+            self.app.after_cancel(self._diag_after_id)
+            self._diag_after_id = None
         if self._logging_active:
             self._finalize_log()          # đóng log cũ nếu còn dang dở
         self._logging_active  = True
         self._delta_samples   = []
         self._log_start_time  = time.time()
-        self._log_command     = f"{direction} {distance:.0f}mm"
+        self._log_id          = time.strftime(
+            "%Y%m%d_%H%M%S", time.localtime(self._log_start_time),
+        )
+        self._log_command     = (
+            direction if math.isnan(distance) else f"{direction} {distance:.0f}mm"
+        )
         self._log_distance    = distance
         self.lbl_log_status.configure(
             text=f"● {self._log_command}  (0 samples)", text_color="#ffc107",
         )
         self._set_status(f"Logging delta: {self._log_command}…")
 
+    def _diag_log_10s(self) -> None:
+        if self._logging_active:
+            self._finalize_log()
+            return
+        self._start_log(f"diag_rest_{DIAG_LOG_SECONDS}s", math.nan)
+
+        def _timeout():
+            self._diag_after_id = None
+            self._finalize_log()
+
+        self._diag_after_id = self.app.after(DIAG_LOG_SECONDS * 1000, _timeout)
+
+    def _append_csv_rows(
+        self,
+        path: Path,
+        rows: list[dict],
+        fieldnames: list[str],
+    ) -> None:
+        if not rows:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_header = True
+        if path.exists():
+            with open(path, newline="") as f:
+                existing = next(csv.reader(f), [])
+            if existing != fieldnames:
+                raise RuntimeError(
+                    f"CSV schema mismatch for {path}: expected {fieldnames}, "
+                    f"found {existing}. Use a new *_vN.csv log path."
+                )
+            write_header = False
+        with open(path, "a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            if write_header:
+                writer.writeheader()
+            writer.writerows(rows)
+
     def _finalize_log(self) -> None:
         """Tính trung bình delta và ghi CSV. Chạy trên main thread."""
         if not self._logging_active:
             return
+        if self._diag_after_id is not None:
+            self.app.after_cancel(self._diag_after_id)
+            self._diag_after_id = None
         self._logging_active = False
 
         samples  = self._delta_samples
@@ -704,47 +1022,165 @@ class ForceInferStation:
             )
             return
 
-        deltas = [s["delta"] for s in samples]
-        models = [s["model"] for s in samples]
-        imadas = [s["imada"] for s in samples]
-
-        delta_mean = statistics.mean(deltas)
-        delta_std  = statistics.stdev(deltas) if len(deltas) > 1 else 0.0
+        deltas = _finite(s["delta_n"] for s in samples)
+        abs_deltas = [abs(v) for v in deltas]
+        spike_samples = [
+            s for s in samples
+            if not math.isnan(float(s["abs_delta_n"]))
+            and float(s["abs_delta_n"]) >= DELTA_SPIKE_N
+        ]
+        delta_mean = _mean_or_nan(deltas)
+        delta_std  = _stdev_or_zero(deltas)
+        max_abs_delta = max(abs_deltas, default=math.nan)
+        first_spike_t = (
+            float(spike_samples[0]["t_rel_s"]) if spike_samples else math.nan
+        )
 
         row = {
             "timestamp":    time.strftime("%Y-%m-%d %H:%M:%S",
                                           time.localtime(self._log_start_time)),
+            "log_id":       self._log_id,
             "command":      self._log_command,
             "distance_mm":  self._log_distance,
             "duration_s":   round(duration, 3),
             "n_samples":    len(samples),
-            "delta_mean_n": round(delta_mean, 4),
-            "delta_std_n":  round(delta_std, 4),
-            "model_mean_n": round(statistics.mean(models), 4),
-            "imada_mean_n": round(statistics.mean(imadas), 4),
+            "n_delta_samples": len(deltas),
+            "spike_threshold_n": DELTA_SPIKE_N,
+            "n_spikes": len(spike_samples),
+            "max_abs_delta_n": _round_or_nan(max_abs_delta),
+            "first_spike_t_rel_s": _round_or_nan(first_spike_t, ndigits=3),
+            "delta_mean_n": _round_or_nan(delta_mean),
+            "delta_std_n":  _round_or_nan(delta_std),
+            "model_raw_mean_n": _round_or_nan(
+                _mean_or_nan(s["pred_raw_n"] for s in samples),
+            ),
+            "model_zero_mean_n": _round_or_nan(
+                _mean_or_nan(s["model_zero_n"] for s in samples),
+            ),
+            "model_tared_mean_n": _round_or_nan(
+                _mean_or_nan(s["pred_tared_n"] for s in samples),
+            ),
+            "model_display_mean_n": _round_or_nan(
+                _mean_or_nan(s["pred_display_n"] for s in samples),
+            ),
+            "imada_raw_mean_n": _round_or_nan(
+                _mean_or_nan(s["imada_raw_n"] for s in samples),
+            ),
+            "imada_zero_mean_n": _round_or_nan(
+                _mean_or_nan(s["imada_zero_n"] for s in samples),
+            ),
+            "imada_corrected_mean_n": _round_or_nan(
+                _mean_or_nan(s["imada_corrected_n"] for s in samples),
+            ),
+            "imada_latest_corrected_mean_n": _round_or_nan(
+                _mean_or_nan(s["imada_latest_corrected_n"] for s in samples),
+            ),
+            "n_valid_mean": _round_or_nan(
+                _mean_or_nan(s["n_valid"] for s in samples), ndigits=2,
+            ),
+            "disp_mean_px": _round_or_nan(
+                _mean_or_nan(s["disp_mean_px"] for s in samples),
+            ),
+            "disp_max_px": _round_or_nan(
+                _mean_or_nan(s["disp_max_px"] for s in samples),
+            ),
+            "infer_ms_mean": _round_or_nan(
+                _mean_or_nan(s["infer_ms"] for s in samples), ndigits=2,
+            ),
+            "infer_ms_max": _round_or_nan(
+                max(_finite(s["infer_ms"] for s in samples), default=math.nan),
+                ndigits=2,
+            ),
+            "frame_force_dt_mean_s": _round_or_nan(
+                _mean_or_nan(s["frame_force_dt_s"] for s in samples),
+            ),
+            "frame_latest_force_dt_mean_s": _round_or_nan(
+                _mean_or_nan(s["frame_latest_force_dt_s"] for s in samples),
+            ),
+            "force_age_mean_s": _round_or_nan(
+                _mean_or_nan(s["force_age_s"] for s in samples),
+            ),
+            "force_latest_age_mean_s": _round_or_nan(
+                _mean_or_nan(s["force_latest_age_s"] for s in samples),
+            ),
         }
 
-        log_path = Path("data/infer_delta_log.csv")
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        write_header = not log_path.exists()
-        with open(log_path, "a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-            if write_header:
-                writer.writeheader()
-            writer.writerow(row)
+        legacy_row = {
+            "timestamp": row["timestamp"],
+            "command": row["command"],
+            "distance_mm": row["distance_mm"],
+            "duration_s": row["duration_s"],
+            "n_samples": row["n_samples"],
+            "delta_mean_n": row["delta_mean_n"],
+            "delta_std_n": row["delta_std_n"],
+            "model_mean_n": row["model_display_mean_n"],
+            "imada_mean_n": row["imada_corrected_mean_n"],
+        }
+        self._append_csv_rows(
+            LEGACY_DELTA_LOG_PATH, [legacy_row], list(legacy_row.keys()),
+        )
+        self._append_csv_rows(
+            SUMMARY_LOG_PATH, [row], list(row.keys()),
+        )
 
+        sample_fields = [
+            "timestamp",
+            "log_id",
+            "t_rel_s",
+            "sample_ts_mono",
+            "frame_ts_mono",
+            "force_ts_mono",
+            "force_latest_ts_mono",
+            "frame_age_s",
+            "force_age_s",
+            "force_latest_age_s",
+            "frame_force_dt_s",
+            "frame_latest_force_dt_s",
+            "infer_ms",
+            "command",
+            "distance_mm",
+            "motor_state",
+            "model_label",
+            "model_type",
+            "pred_raw_n",
+            "model_zero_n",
+            "pred_tared_n",
+            "pred_display_n",
+            "imada_raw_n",
+            "imada_raw_line",
+            "imada_zero_n",
+            "imada_corrected_n",
+            "imada_latest_raw_n",
+            "imada_latest_raw_line",
+            "imada_latest_corrected_n",
+            "delta_n",
+            "abs_delta_n",
+            "is_spike",
+            "spike_threshold_n",
+            "n_ref_markers",
+            "n_valid",
+            "valid_ratio",
+            "disp_mean_px",
+            "disp_max_px",
+            "dx_mean_px",
+            "dy_mean_px",
+        ]
+        self._append_csv_rows(
+            SAMPLES_LOG_PATH, samples, sample_fields,
+        )
+
+        delta_text = "nan" if math.isnan(delta_mean) else f"{delta_mean:+.4f} N"
         summary = (
             f"{self._log_command}\n"
-            f"Δ_mean={delta_mean:+.4f} N  ±{delta_std:.4f}\n"
-            f"{len(samples)} samples  |  {duration:.1f}s"
+            f"Δ_mean={delta_text}  ±{delta_std:.4f}\n"
+            f"{len(deltas)}/{len(samples)} valid samples  |  {duration:.1f}s"
         )
         self.lbl_log_status.configure(text=summary, text_color="#adb5bd")
-        self._show_toast(
-            f"Log: {self._log_command}  Δ={delta_mean:+.4f} N", color="#198754",
-        )
+        self._show_toast(f"Log saved: {self._log_command}", color="#198754")
         self._set_status(
-            f"Log saved: {self._log_command}  Δ_mean={delta_mean:+.4f} N  "
-            f"±{delta_std:.4f}  ({len(samples)} samples,  {duration:.1f}s)"
+            f"Log saved: {self._log_command}  Δ_mean={delta_text}  "
+            f"±{delta_std:.4f}  ({len(deltas)}/{len(samples)} valid samples,  "
+            f"{duration:.1f}s)"
         )
 
     # ------------------------------------------------------------------ #
@@ -754,10 +1190,34 @@ class ForceInferStation:
     def _update_ui(self) -> None:
         with self._lock:
             vis        = self._latest_vis
-            force_raw  = self._latest_force_n
+            force_latest_raw = self._latest_force_n
+            force_latest_ts_mono = self._latest_force_ts_mono
+            force_latest_raw_line = self._latest_force_raw_line
+            pred_raw   = self._latest_pred_raw_force
+            pred_tared = self._latest_pred_tared_force
             pred       = self._latest_pred_force
+            frame_ts_mono = self._latest_frame_ts_mono
+            infer_ms = self._latest_infer_ms
             zero       = self._force_zero_n
             n_valid    = self._latest_n_valid
+            model_zero = self._model_zero_n
+            tare_pending = self._model_tare_pending
+            tare_count = len(self._model_tare_samples)
+            debug_stats = dict(self._latest_debug)
+            model_label = self._latest_model_label
+            model_type = self._latest_model_type
+            (
+                force_aligned_raw,
+                force_aligned_ts_mono,
+                force_aligned_raw_line,
+                frame_force_dt_s,
+            ) = self._nearest_force_locked(frame_ts_mono)
+
+        with self._ref_lock:
+            has_ref = self._ref_image is not None
+            n_ref_markers = (
+                0 if self._ref_markers is None else int(len(self._ref_markers))
+            )
 
         # Camera
         if vis is not None:
@@ -767,22 +1227,38 @@ class ForceInferStation:
             cimg = ctk.CTkImage(light_image=pil, dark_image=pil, size=(480, 360))
             self.video_label.configure(image=cimg, text="")
 
-        # Imada (với zero offset)
+        # Imada latest để hiển thị; delta/log dùng sample đã align với frame.
+        force_latest_corrected = (
+            force_latest_raw - zero
+            if not (math.isnan(force_latest_raw) or math.isnan(zero))
+            else force_latest_raw
+        )
         force_corrected = (
-            force_raw - zero
-            if not (math.isnan(force_raw) or math.isnan(zero))
-            else force_raw
+            force_aligned_raw - zero
+            if not (math.isnan(force_aligned_raw) or math.isnan(zero))
+            else force_aligned_raw
         )
         self.lbl_imada.configure(
-            text=(f"{force_corrected:+.3f} N" if not math.isnan(force_corrected) else "--- N")
+            text=(
+                f"{force_latest_corrected:+.3f} N"
+                if not math.isnan(force_latest_corrected)
+                else "--- N"
+            )
         )
 
         # Model
+        model_text = (
+            f"tare {tare_count}/{MODEL_TARE_SAMPLES}"
+            if tare_pending
+            else f"{pred:+.3f} N" if not math.isnan(pred)
+            else "--- N"
+        )
         self.lbl_model_force.configure(
-            text=(f"{pred:+.3f} N" if not math.isnan(pred) else "--- N")
+            text=model_text
         )
 
         # Delta
+        delta = math.nan
         if not (math.isnan(pred) or math.isnan(force_corrected)):
             delta = pred - force_corrected
             txt   = f"Δ (model − imada) = {delta:+.3f} N"
@@ -791,26 +1267,93 @@ class ForceInferStation:
                 else "#ffc107" if abs(delta) < 0.3
                 else "#dc3545"
             )
-            # Collect sample nếu đang logging
-            if self._logging_active:
-                self._delta_samples.append({
-                    "delta": delta,
-                    "model": pred,
-                    "imada": force_corrected,
-                })
-                self.lbl_log_status.configure(
-                    text=f"● {self._log_command}  ({len(self._delta_samples)} samples)",
-                    text_color="#ffc107",
-                )
+        elif tare_pending:
+            txt = f"model tare: {tare_count}/{MODEL_TARE_SAMPLES}"
+            color = "#ffc107"
         else:
             txt, color = "Δ = ---", "#adb5bd"
         self.lbl_delta.configure(text=txt, text_color=color)
 
+        # Collect sample nếu đang logging. Ghi cả raw/tared để debug bias.
+        if self._logging_active:
+            now = time.time()
+            now_mono = time.monotonic()
+            abs_delta = abs(delta) if not math.isnan(delta) else math.nan
+            frame_age_s = (
+                now_mono - frame_ts_mono if not math.isnan(frame_ts_mono) else math.nan
+            )
+            force_age_s = (
+                now_mono - force_aligned_ts_mono
+                if not math.isnan(force_aligned_ts_mono)
+                else math.nan
+            )
+            force_latest_age_s = (
+                now_mono - force_latest_ts_mono
+                if not math.isnan(force_latest_ts_mono)
+                else math.nan
+            )
+            frame_latest_force_dt_s = (
+                frame_ts_mono - force_latest_ts_mono
+                if not (math.isnan(frame_ts_mono) or math.isnan(force_latest_ts_mono))
+                else math.nan
+            )
+            self._delta_samples.append({
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "log_id": self._log_id,
+                "t_rel_s": round(now - self._log_start_time, 3),
+                "sample_ts_mono": round(now_mono, 6),
+                "frame_ts_mono": frame_ts_mono,
+                "force_ts_mono": force_aligned_ts_mono,
+                "force_latest_ts_mono": force_latest_ts_mono,
+                "frame_age_s": frame_age_s,
+                "force_age_s": force_age_s,
+                "force_latest_age_s": force_latest_age_s,
+                "frame_force_dt_s": frame_force_dt_s,
+                "frame_latest_force_dt_s": frame_latest_force_dt_s,
+                "infer_ms": infer_ms,
+                "command": self._log_command,
+                "distance_mm": self._log_distance,
+                "motor_state": self._motor_state,
+                "model_label": model_label,
+                "model_type": model_type,
+                "pred_raw_n": pred_raw,
+                "model_zero_n": model_zero,
+                "pred_tared_n": pred_tared,
+                "pred_display_n": pred,
+                "imada_raw_n": force_aligned_raw,
+                "imada_raw_line": force_aligned_raw_line,
+                "imada_zero_n": zero,
+                "imada_corrected_n": force_corrected,
+                "imada_latest_raw_n": force_latest_raw,
+                "imada_latest_raw_line": force_latest_raw_line,
+                "imada_latest_corrected_n": force_latest_corrected,
+                "delta_n": delta,
+                "abs_delta_n": abs_delta,
+                "is_spike": int(not math.isnan(abs_delta) and abs_delta >= DELTA_SPIKE_N),
+                "spike_threshold_n": DELTA_SPIKE_N,
+                "n_ref_markers": n_ref_markers,
+                "n_valid": n_valid,
+                "valid_ratio": debug_stats["valid_ratio"],
+                "disp_mean_px": debug_stats["disp_mean_px"],
+                "disp_max_px": debug_stats["disp_max_px"],
+                "dx_mean_px": debug_stats["dx_mean_px"],
+                "dy_mean_px": debug_stats["dy_mean_px"],
+            })
+            self.lbl_log_status.configure(
+                text=f"● {self._log_command}  ({len(self._delta_samples)} samples)",
+                text_color="#ffc107",
+            )
+
         # Marker count
-        with self._ref_lock:
-            has_ref = self._ref_image is not None
+        marker_text = ""
+        if has_ref:
+            marker_text = f"valid markers: {n_valid}/{n_ref_markers}"
+            if tare_pending:
+                marker_text += f" | tare {tare_count}/{MODEL_TARE_SAMPLES}"
+            elif not math.isnan(model_zero):
+                marker_text += f" | model zero: {model_zero:+.3f}N"
         self.lbl_n_markers.configure(
-            text=(f"valid markers: {n_valid}" if has_ref else "")
+            text=marker_text
         )
 
         self.app.after(50, self._update_ui)

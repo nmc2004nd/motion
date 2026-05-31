@@ -11,7 +11,7 @@ data:
 
 model:
   feature_set: "v1"      # preset trong features.py
-  degree: 2              # bậc đa thức (2=55 params, 3=220 params)
+  degree: 3             # bậc đa thức (2=55 params, 3=220 params)
   head: "mlp_small"         # "linear" (poly regression thuần) | "mlp_small"
   hidden_head: 16
   dropout: 0.0
