@@ -42,6 +42,17 @@ class BlobDetectorConfig:
 def create_blob_detector(config: dict) -> cv2.SimpleBlobDetector:
     """Tạo detector blob cho marker sáng trên nền tối."""
     cfg = BlobDetectorConfig.from_config(config)
+    """
+    detection:
+    min_threshold: 50
+    max_threshold: 220
+    step: 10
+    min_area: 30.0
+    max_area: 500.0
+    min_circularity: 0.5
+    min_inertia: 0.3
+    min_convexity: 0.7
+    """
 
     params = cv2.SimpleBlobDetector_Params()
     params.minThreshold = cfg.min_threshold

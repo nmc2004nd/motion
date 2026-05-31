@@ -42,6 +42,18 @@ def track_markers_lk(
     max_iter = int(require(config, "tracking.pyrlk.term_criteria.max_iter"))
     eps = float(require(config, "tracking.pyrlk.term_criteria.eps"))
 
+    """
+    tracking:
+    min_displacement: 1
+    pyrlk:
+    win_size: [21, 21]
+    max_level: 3
+    fb_threshold: 2.0
+    term_criteria:
+      max_iter: 30
+      eps: 0.01
+    """
+
     lk_params = dict(
         winSize=win_size,
         maxLevel=max_level,
