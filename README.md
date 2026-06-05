@@ -175,10 +175,3 @@ python -m src.shape_model.eval --config src/shape_model/config.yaml --split test
 python -m src.shape_model.infer --image <path-to-frame.jpg>
 ```
 
-Commit và push:
-
-```bash
-git add README.md
-git commit -m "Add project README"
-git push
-```
